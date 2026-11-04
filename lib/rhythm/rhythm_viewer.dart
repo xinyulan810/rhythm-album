@@ -56,6 +56,16 @@ class _RhythmViewerState extends State<RhythmViewer> {
     if (mounted && updated is Map) setState(() => item.addAll(Map<String, dynamic>.from(updated)));
   }
 
+  void _relatedDeleted(List<String> ids) {
+    final removed = ids.toSet();
+    final preceding = gallery.items.take(index).where((row) => removed.contains(row['id'])).length;
+    index -= preceding;
+    gallery.removeLoadedPhotos(removed);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && pages.hasClients) pages.jumpToPage(index);
+    });
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -151,7 +161,8 @@ class _RhythmViewerState extends State<RhythmViewer> {
       }
       if (action == 'sameSong') {
         await Navigator.push<void>(context, MaterialPageRoute(builder: (_) => RhythmSongPage(
-          songId: (item['songId'] as num? ?? 0).toInt(), relatedTo: id, title: item['song'] as String? ?? '同曲截图')));
+          songId: (item['songId'] as num? ?? 0).toInt(), relatedTo: id, title: item['song'] as String? ?? '同曲截图',
+          onDeleted: _relatedDeleted)));
         // The nested viewer may have corrected a title or changed the library.
         gallery.viewerChanged = true;
         final updated = await gallery.action('songInfo', {'id': id});
@@ -277,7 +288,7 @@ class _RhythmViewerState extends State<RhythmViewer> {
                       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                         if (detailsVisible) RhythmSongRelated(
                           key: ValueKey('${item['id']}-${item['songId']}-${item['song']}-${item['songRaw']}'),
-                          row: item, onReturn: _refreshCurrent, onConfirm: () => _action('song')),
+                          row: item, onReturn: _refreshCurrent, onConfirm: () => _action('song'), onDeleted: _relatedDeleted),
                         SelectableText(
                         '时间：${rhythmDate(item, time: true)}\n'
                         '尺寸：${item['width']} × ${item['height']}\n'
@@ -368,9 +379,12 @@ class _RhythmViewerState extends State<RhythmViewer> {
                       child: Row(
                         children: [
                           BackButton(onPressed: _leave),
+                          if (gallery.stats['showSongMissing'] != false && item != null && rhythmSongMissing(item)) const RhythmSongMissingBadge(),
                           Expanded(
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text((item?['song'] as String? ?? '').trim().isEmpty ? '未识别曲名' : item!['song'] as String,
+                              Text((item?['song'] as String? ?? '').trim().isEmpty
+                                  ? (gallery.stats['showSongMissing'] == false ? '截图' : '未识别曲名')
+                                  : item!['song'] as String,
                                 key: const Key('rhythm-viewer-song'), maxLines: 1, overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                               Text('${index + 1} / ${gallery.total} · ${item == null ? '' : rhythmDate(item, time: true)}',
@@ -385,7 +399,7 @@ class _RhythmViewerState extends State<RhythmViewer> {
                               if (!gallery.trash) ...[
                                 const PopupMenuItem(value: 'metadata', child: Text('整理 / 改名')),
                                 const PopupMenuItem(value: 'song', child: Text('确认曲名 / 添加别名')),
-                                const PopupMenuItem(value: 'songLayout', child: Text('设置歌名位置')),
+                                const PopupMenuItem(value: 'songLayout', child: Text('选择歌名位置')),
                                 if ((item?['songId'] as num? ?? 0) > 0 || (item?['song'] as String? ?? '').trim().isNotEmpty ||
                                     (item?['songRaw'] as String? ?? '').trim().isNotEmpty)
                                   const PopupMenuItem(value: 'sameSong', child: Text('查看同曲截图')),

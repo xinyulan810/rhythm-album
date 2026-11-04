@@ -8,6 +8,8 @@ void registerRhythmNativeLicenses() {
   LicenseRegistry.addLicense(() async* {
     final catalogLicense = await const MethodChannel('io.rhythmalbum/library').invokeMethod<String>('songLicense');
     if (catalogLicense != null) yield LicenseEntryWithLineBreaks(['Arcaea Toolbelt data (MIT)'], catalogLicense);
+    final pinyinLicense = await const MethodChannel('io.rhythmalbum/library').invokeMethod<String>('pinyinLicense');
+    if (pinyinLicense != null) yield LicenseEntryWithLineBreaks(['python-pinyin readings (MIT)'], pinyinLicense);
     yield const LicenseEntryWithLineBreaks(
       ['libjpeg-turbo'],
       '''

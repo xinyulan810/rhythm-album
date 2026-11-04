@@ -27,6 +27,56 @@ object RhythmSongMatcher {
             listOf("future", "past", "present", "beyond", "eternal", "inscribed", "track", "pure").any { it in t }
     }
 
+    fun locateComboPanel(lines: List<Line>, frame: Line): Title? {
+        val dx = frame.right-frame.x
+        val dy = frame.height
+        val candidates = lines.filter {
+            it.x in (frame.x+dx*.18)..(frame.x+dx*.50) && it.right <= frame.x+dx*1.18 &&
+                it.y in (frame.y-dy*1.02)..(frame.y-dy*.65) &&
+                it.bottom <= frame.y-dy*.54 && it.height in (dy*.10)..(dy*.40) &&
+                it.text.trim().length in 1..300 && it.text.any(Char::isLetterOrDigit)
+        }
+        val primary = candidates.maxByOrNull { it.height + if (it.engine == "latin") .002 else 0.0 } ?: return null
+        val sameRow = candidates.filter { abs(it.y-primary.y) < dy*.1 && abs(it.bottom-primary.bottom) < dy*.1 }
+        val artist = lines.firstOrNull {
+            it.engine == primary.engine && abs(it.x-primary.x) < dx*.08 &&
+                it.y >= primary.bottom && it.y <= primary.bottom+dy*.20 &&
+                it.bottom <= frame.y-dy*.40 && it.height < primary.height
+        }?.text.orEmpty()
+        return Title(primary.text.trim(),artist.trim(),sameRow.map { it.text.trim() }.distinct(),primary)
+    }
+
+    /** Reference band moves with the result UI; artist-only OCR is not promoted to a title. */
+    fun titleBand(anchor: Line): Pair<Double, Double> {
+        // Empirical anchor transform from the wide, tablet and lower-header samples.
+        // Use the anchor position rather than glyph height (which varies with OCR engine).
+        val expectedTop = 2.25 * anchor.y - .63
+        return (expectedTop - .045).coerceAtLeast(.075) to expectedTop + .045
+    }
+    fun arcaeaTitleCandidates(lines: List<Line>, anchor: Line): List<Line> {
+        val (top, lastTop) = titleBand(anchor)
+        return lines.filter {
+            it.y in top..lastTop && it.bottom <= anchor.y - .07 &&
+                it.height in .022.. .095 && abs(it.center - .5) < .17 &&
+                it.text.trim().length in 1..300 && it.text.any(Char::isLetterOrDigit) &&
+                compact(it.text) !in setOf("potential","result","trackcomplete","tracklost","purememory","fullrecall","maxrecall","结果")
+        }
+    }
+    fun locateAnchored(lines: List<Line>, anchor: Line): Title? {
+        val candidates = arcaeaTitleCandidates(lines,anchor)
+        val lastTop = titleBand(anchor).second
+        val primary = candidates.maxByOrNull {
+            it.height * 8 - abs(it.center - .5) * .6 + if (it.engine == "latin") .01 else 0.0
+        } ?: return null
+        val sameRow = candidates.filter { abs(it.y-primary.y) < .022 && abs(it.bottom-primary.bottom) < .028 }
+        val artist = lines.firstOrNull {
+            it.engine == primary.engine && it.y >= primary.bottom - .003 && it.y <= primary.bottom + .065 &&
+                it.y > lastTop && it.bottom < anchor.y - .04 &&
+                it.height < primary.height && abs(it.center - .5) < .12
+        }?.text.orEmpty()
+        return Title(primary.text.trim(), artist.trim(), sameRow.map { it.text.trim() }.distinct(), primary)
+    }
+
     fun locate(lines: List<Line>): Title? {
         // Broad enough for the supplied 2.23:1 and 1.60:1 layouts.
         // UI anchors are checked by the caller; this is NOT a universal title detector.

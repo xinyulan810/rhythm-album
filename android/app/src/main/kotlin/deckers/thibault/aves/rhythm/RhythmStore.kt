@@ -12,7 +12,7 @@ import java.util.UUID
 
 /** Private library only. Never deletes or opens a system content URI for writing. */
 class RhythmStore internal constructor(val context: Context, private val isolated: Boolean = false, private val benchmarkRun: String = "default") :
-    SQLiteOpenHelper(context, if (isolated) "rhythm-benchmark-$benchmarkRun.db" else "rhythm-library-v1.db", null, 8) {
+    SQLiteOpenHelper(context, if (isolated) "rhythm-benchmark-$benchmarkRun.db" else "rhythm-library-v1.db", null, 9) {
     val operations = java.util.concurrent.locks.ReentrantLock(true)
     @Volatile var songGeneration = 0L
     @Volatile var songParallel = 0
@@ -22,6 +22,25 @@ class RhythmStore internal constructor(val context: Context, private val isolate
     val prefs = context.getSharedPreferences(if (isolated) "rhythm-benchmark" else "rhythm-library", Context.MODE_PRIVATE)
     val categories by lazy { RhythmCategories(this) }
     val songs by lazy { RhythmSongs(this) }
+    val readings by lazy { RhythmSearch(context) }
+    /** Existing text search remains in SQL; only additional phonetic hits use this bounded cache. */
+    fun phoneticIds(term: String): List<String> {
+        if (!RhythmSearch.key(term).matches(Regex("[a-z0-9]+"))) return emptyList()
+        val songIds = mutableSetOf<Long>()
+        readableDatabase.rawQuery("SELECT songId,name FROM song_names",null).use { c ->
+            while (c.moveToNext()) if (readings.matches(c.getString(1),term)) songIds.add(c.getLong(0))
+        }
+        val codes = mutableSetOf<String>()
+        readableDatabase.rawQuery("SELECT c.code,t.name FROM categories c JOIN categories t ON t.code=c.target",null).use { c ->
+            while (c.moveToNext()) if (readings.matches(c.getString(1),term)) codes.add(c.getString(0))
+        }
+        return readableDatabase.rawQuery("SELECT id,songId,categoryCode,song,songRaw,name,game,tags,ocrText FROM images WHERE trashed<2",null).use { c ->
+            buildList {
+                while (c.moveToNext()) if (c.getLong(1) in songIds || c.getString(2) in codes ||
+                    (3..8).any { readings.matches(c.getString(it),term) }) add(c.getString(0))
+            }
+        }
+    }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE images(
             id TEXT PRIMARY KEY, source TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
@@ -41,6 +60,7 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         RhythmSongs.migrate(db)
         upgradeSongLayout(db)
         upgradeSongGrams(db)
+        upgradeDetectedLayout(db)
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) upgradeGallery(db)
@@ -50,6 +70,14 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         if (oldVersion < 6) RhythmSongs.migrate(db)
         if (oldVersion < 7) upgradeSongLayout(db)
         if (oldVersion < 8) upgradeSongGrams(db)
+        if (oldVersion < 9) upgradeDetectedLayout(db)
+    }
+    private fun upgradeDetectedLayout(db: SQLiteDatabase) {
+        val columns = db.rawQuery("PRAGMA table_info(images)", null).use { c ->
+            buildSet { while (c.moveToNext()) add(c.getString(1)) }
+        }
+        for (name in listOf("songLayoutKey", "songLayoutAnchor"))
+            if (name !in columns) db.execSQL("ALTER TABLE images ADD COLUMN $name TEXT NOT NULL DEFAULT ''")
     }
     private fun upgradeSongGrams(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE image_song_grams(imageId TEXT NOT NULL,gram TEXT NOT NULL,PRIMARY KEY(imageId,gram))")
@@ -156,9 +184,11 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         return if (compact.length < 3) setOf(compact) else compact.windowed(3).toSet()
     }
     fun query(where: String = "1", args: Array<String> = emptyArray(), limit: Int = 100, offset: Int = 0,
-              ascending: Boolean = false): List<Map<String, Any>> {
+              ascending: Boolean = false, preferredGame: String? = null): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
-        val order = if (ascending) "taken ASC, id ASC" else "taken DESC, id DESC"
+        val dateOrder = if (ascending) "taken ASC, id ASC" else "taken DESC, id DESC"
+        val order = if (preferredGame.isNullOrBlank()) dateOrder else
+            "(COALESCE(NULLIF(songLayoutCode,''),categoryCode)=${android.database.DatabaseUtils.sqlEscapeString(preferredGame)}) DESC,$dateOrder"
         readableDatabase.query("images", null, where, args, null, null, order, "$offset,$limit").use { cursor ->
             while (cursor.moveToNext()) {
                 val row = mutableMapOf<String, Any>()
@@ -213,6 +243,8 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         result["recentThumbnails"] = query("trashed=0", limit = 4).map { it["thumbnail"] as String }
         result["otherThumbnails"] = query("trashed=0 AND NOT (${RhythmCategories.VISIBLE})", limit = 4).map { it["thumbnail"] as String }
         result["otherCount"] = count("trashed=0 AND NOT (${RhythmCategories.VISIBLE})", emptyArray())
+        result["songMissing"] = count("trashed=0 AND $SONG_MISSING",emptyArray())
+        result["otherSongMissing"] = count("trashed=0 AND NOT (${RhythmCategories.VISIBLE}) AND $SONG_MISSING",emptyArray())
         result["classifying"] = count("trashed=0 AND classified=0 AND status IN ('pending','compressed','ready')", emptyArray())
         result["canUndoCategory"] = categories.canUndo()
         result["ocrPending"] = count("ocrVersion=0 AND ocrError='' AND trashed=0 AND status IN ('compressed','ready')", emptyArray())
@@ -243,17 +275,19 @@ class RhythmStore internal constructor(val context: Context, private val isolate
     fun relatedCandidates(title: String, linkedId: Long, imageId: String): List<Map<String, Any>> {
         val normalized = RhythmSongMatcher.compact(title).take(300)
         val grams = songGrams(normalized)
+        val game = android.database.DatabaseUtils.sqlEscapeString(RhythmSongLayouts.code(get(imageId)))
+        val preferred = "(COALESCE(NULLIF(i.songLayoutCode,''),i.categoryCode)=$game)"
         val candidates = linkedSetOf<String>()
         if (grams.isNotEmpty()) {
             val placeholders = grams.joinToString(",") { "?" }
             readableDatabase.rawQuery("""SELECT g.imageId FROM image_song_grams g JOIN images i ON i.id=g.imageId
                 WHERE g.gram IN ($placeholders) AND i.trashed=0 AND i.id!=?
-                GROUP BY g.imageId ORDER BY COUNT(*) DESC LIMIT 400""", (grams.toList()+imageId).toTypedArray()).use {
+                GROUP BY g.imageId ORDER BY $preferred DESC,COUNT(*) DESC,i.taken DESC,i.id DESC LIMIT 400""", (grams.toList()+imageId).toTypedArray()).use {
                 while (it.moveToNext()) candidates.add(it.getString(0))
             }
         }
         if (linkedId > 0) {
-            readableDatabase.rawQuery("SELECT id FROM images WHERE songId=? AND trashed=0 AND id!=? ORDER BY taken DESC,id DESC LIMIT 3000",
+            readableDatabase.rawQuery("SELECT id FROM images i WHERE songId=? AND trashed=0 AND id!=? ORDER BY $preferred DESC,taken DESC,id DESC LIMIT 3000",
                 arrayOf(linkedId.toString(),imageId)).use { while(it.moveToNext() && candidates.size < 800) candidates.add(it.getString(0)) }
         }
         if (candidates.isEmpty()) return emptyList()
@@ -319,6 +353,7 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         }
     }
     companion object {
+        const val SONG_MISSING = "songManual=0 AND songId=0 AND trim(song)='' AND trim(songRaw)=''"
         fun sourceKey(source: String): String {
             val uri = android.net.Uri.parse(source)
             val document = uri.lastPathSegment.orEmpty()

@@ -11,6 +11,54 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class RhythmSongsTest {
+    @Test fun phoneticsSupportKanaPolyphonesAndEditedTitles() {
+        val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"phonetics")
+        try {
+            val readings = store.readings
+            for ((text,query) in listOf("重庆" to "chong qing","重庆" to "zhongqing","音乐" to "yinyue",
+                "快乐" to "kuaile","银行" to "yinhang","女神" to "nüshen",
+                "キャット" to "kyatto","がっこう" to "gakkou","ミュージック" to "myuujikku",
+                "ｷｬｯﾄ" to "kyatto","しんぶん" to "shinbun","スーパー" to "suupaa","スーパー" to "supa")) {
+                assertTrue("$text / $query",readings.matches(text,query))
+            }
+            assertFalse(readings.matches("快乐","yinyue"))
+            assertFalse(readings.matches("初音","hatsune")) // Kanji Japanese readings are deliberately not inferred.
+            store.enqueue("content://phonetic/one","Screenshot.png","",false)
+            val id = store.query().single()["id"] as String
+            store.update(id,"song" to "重庆音乐")
+            assertEquals(listOf(id),store.phoneticIds("chongqingyinyue"))
+            store.update(id,"song" to "キャット")
+            assertTrue(store.phoneticIds("chongqingyinyue").isEmpty())
+            assertEquals(listOf(id),store.phoneticIds("kyatto"))
+            store.songs.confirm(id,0,"本地曲","",listOf("ミュージック"))
+            assertTrue(store.songs.search("myuujikku").any { it["title"] == "本地曲" })
+        } finally { store.close() }
+    }
+
+    @Test fun relatedOrderPrefersOriginalGameThenDateAndMissingCountsExcludeManualOptOut() {
+        val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"song-order")
+        try {
+            store.categories.ensure("arcaea","Renamed")
+            store.categories.ensure("phira","Other")
+            val ids = (0..3).map { n ->
+                store.enqueue("content://order/$n","Screenshot$n.jpg","",false,1000L+n)
+                val id = store.query("source=?",arrayOf("content://order/$n")).single()["id"] as String
+                store.update(id,"song" to "Same title","songLayoutCode" to if (n == 3) "phira" else "arcaea",
+                    "categoryCode" to "arcaea","status" to "compressed")
+                id
+            }
+            assertEquals(listOf(ids[2],ids[1],ids[3]),store.songs.relatedIds(ids[0]))
+            val rows = store.query("id!=?",arrayOf(ids[0]),preferredGame = "arcaea")
+            assertEquals(listOf(ids[2],ids[1],ids[3]),rows.map { it["id"] })
+            store.update(ids[1],"song" to "")
+            store.update(ids[2],"song" to "","songManual" to 1)
+            assertEquals(1L,store.stats()["songMissing"])
+            assertEquals(1L,store.categories.albums().single()["songMissing"])
+            store.update(ids[1],"songRaw" to "Recognized custom song")
+            assertEquals(0L,store.stats()["songMissing"])
+        } finally { store.close() }
+    }
+
     @Test fun relatedSearchAcceptsUnconfirmedTyposAndFragmentsWithoutAssigningIdentity() {
         val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"song-related")
         try {
@@ -37,6 +85,7 @@ class RhythmSongsTest {
             store.enqueue("content://layout/2","Screenshot2.jpg","Phira",true)
             val rows = store.query()
             rows.forEach { store.update(it["id"] as String,"categoryCode" to "phira","songLayoutCode" to "phira",
+                "songLayoutKey" to "phira:preset-v1",
                 "status" to "ready","ocrVersion" to 1,"songVersion" to 1) }
             val first = rows[0]["id"] as String
             val second = rows[1]["id"] as String
@@ -46,8 +95,8 @@ class RhythmSongsTest {
             store.categories.correct(listOf(second),"Arcaea",false)
             assertEquals("phira",RhythmSongLayouts.code(store.get(second)))
             val box = RhythmSongLayouts.Box(.2,.1,.8,.2)
-            RhythmSongLayouts.save(store,"phira",box)
-            assertEquals(box,RhythmSongLayouts.saved(store,"phira"))
+            RhythmSongLayouts.save(store,"phira:preset-v1",box)
+            assertEquals(box,RhythmSongLayouts.saved(store,"phira:preset-v1"))
             assertNull(RhythmSongLayouts.saved(store,"arcaea"))
             assertEquals("manual",store.get(first)["songState"])
             assertEquals(0L,store.get(second)["songVersion"])
@@ -55,8 +104,34 @@ class RhythmSongsTest {
                 RhythmSongMatcher.Line("Local title",.3,.12,.6,.16))
             assertNotNull(store.songs.match(title,"phira").accepted)
             assertNull(store.songs.match(title,"arcaea").accepted)
-            RhythmSongLayouts.save(store,"phira",null)
-            assertNull(RhythmSongLayouts.saved(store,"phira"))
+            RhythmSongLayouts.save(store,"phira:preset-v1",null)
+            assertNull(RhythmSongLayouts.saved(store,"phira:preset-v1"))
+        } finally { store.close() }
+    }
+
+    @Test fun savingOneDetectedLayoutDoesNotResetOtherLayoutsOrUseLegacyBox() {
+        val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"layout-v3")
+        try {
+            val keys = listOf("arcaea:recall-upper-v1","arcaea:combo-left-v1")
+            val ids = keys.mapIndexed { n,key ->
+                store.enqueue("content://layout-v3/$n","Screenshot$n.jpg","",false)
+                val id = store.query("source=?",arrayOf("content://layout-v3/$n")).single()["id"] as String
+                store.update(id,"songLayoutCode" to "arcaea","songLayoutKey" to key,"songVersion" to RhythmSongs.VERSION)
+                id
+            }
+            store.prefs.edit().putString("songLayout:arcaea","{\"x\":0.2,\"y\":0.1,\"right\":0.8,\"bottom\":0.2}").commit()
+            assertNull(RhythmSongLayouts.saved(store,keys[0]))
+            assertNull(RhythmSongLayouts.saved(store,keys[1]))
+            RhythmSongLayouts.save(store,keys[0],RhythmSongLayouts.Box(.2,.1,.8,.2))
+            assertEquals(0L,store.get(ids[0])["songVersion"])
+            assertEquals(RhythmSongs.VERSION.toLong(),store.get(ids[1])["songVersion"])
+            assertNotNull(store.prefs.getString("songLayout:arcaea",null))
+            store.categories.correct(listOf(ids[1]),"Different album",false)
+            assertEquals(keys[1],RhythmSongLayouts.layoutKey(store.get(ids[1])))
+            store.enqueue("content://layout-v3/unknown","Unknown.jpg","",false)
+            val unknown = store.query("source=?",arrayOf("content://layout-v3/unknown")).single()["id"] as String
+            store.categories.correct(listOf(unknown),"Arcaea",false)
+            assertEquals("",RhythmSongLayouts.code(store.get(unknown)))
         } finally { store.close() }
     }
 

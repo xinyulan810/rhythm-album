@@ -67,7 +67,7 @@ void main() {
             (((related['songId'] as num? ?? 0) > 0 && row['songId'] == related['songId']) ||
             row['song'] == related['song'] ||
             ((related['song'] as String? ?? '').contains('Custom') && (row['song'] as String? ?? '').contains('Custom'))))) &&
-          row['id'] != args['excludeId']).toList();
+          row['id'] != args['excludeId'] && row['trashed'] != 1).toList();
         return {
           'items': filtered.skip(offset).take(args['limit'] as int? ?? 60).toList(),
           'total': filtered.length,
@@ -83,6 +83,16 @@ void main() {
         };
       }
       if (call.method == 'songProgress') return stats['songProgress'];
+      if (call.method == 'showSongMissing') {
+        stats['showSongMissing'] = args['enabled'];
+        return true;
+      }
+      if (call.method == 'batch' && args['operation'] == 'trash') {
+        for (final row in rows) {
+          if ((args['ids'] as List).contains(row['id'])) row['trashed'] = 1;
+        }
+        return (args['ids'] as List).length;
+      }
       if (call.method == 'songInfo') return rows.firstWhere((r) => r['id'] == args['id']);
       if (call.method == 'songLayoutScan') {
         return {
@@ -189,7 +199,7 @@ void main() {
       row: rows.first,onReturn: () async {},onConfirm: () {}))));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('related-photo-1')),findsOneWidget);
-    expect(find.text('曲名文字相似'),findsOneWidget);
+    expect(find.textContaining('曲名文字相似'),findsOneWidget);
     expect(find.text('确认曲名后查找同曲截图'),findsNothing);
     final query = calls.lastWhere((c) => c.method == 'list').arguments as Map;
     expect(query['relatedTo'],'photo-0');
@@ -197,6 +207,99 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('related-photo-1')));
     await tester.pumpAndSettle();
     expect(calls.lastWhere((c) => c.method == 'view').arguments,{'id':'photo-1'});
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('returning from album resets search scope including recent searches', (tester) async {
+    rows = [photo(0)];
+    remembered = ['kyatto'];
+    stats['categories'] = [{'code': 'arcaea','name': 'Arcaea','count': 1,'thumbnail': ''}];
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Arcaea'));
+    await tester.pumpAndSettle();
+    expect((calls.lastWhere((c) => c.method == 'list').arguments as Map)['category'],'arcaea');
+    await tester.tap(find.descendant(of: find.byType(AppBar),matching: find.widgetWithIcon(IconButton,Icons.close)));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first,'chongqing');
+    await tester.pumpAndSettle();
+    final query = calls.lastWhere((c) => c.method == 'list').arguments as Map;
+    expect(query['category'],'');
+    expect(query['album'],'');
+    expect(query['search'],'chongqing');
+    await tester.tap(find.widgetWithText(InputChip,'kyatto'));
+    await tester.pumpAndSettle();
+    expect((calls.lastWhere((c) => c.method == 'list').arguments as Map)['category'],'');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('unrecognized album and photo badges expose song area action on selection', (tester) async {
+    rows = [photo(0)];
+    stats['songMissing'] = 1;
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsOneWidget);
+    await tester.tap(find.text('全部截图'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsOneWidget);
+    await tester.longPress(find.byType(RhythmSongMissingBadge));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextButton,'选择歌名位置'),findsOneWidget);
+    expect(tester.widget<TextButton>(find.widgetWithText(TextButton,'选择歌名位置')).onPressed,isNotNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('missing title hint switch hides badges across album photo and viewer', (tester) async {
+    rows = [photo(0)];
+    stats['songMissing'] = 1;
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsOneWidget);
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('显示未识别曲名提示'));
+    await tester.tap(find.widgetWithText(SwitchListTile,'显示未识别曲名提示'));
+    await tester.pumpAndSettle();
+    expect(stats['showSongMissing'],false);
+    expect(find.byType(RhythmSongMissingBadge),findsNothing);
+    await tester.tap(find.text('全部截图'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsNothing);
+    await tester.tap(find.bySemanticsLabel('Screenshot_0.png'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsNothing);
+    expect(find.text('未识别曲名'),findsNothing);
+    expect(rows.single['song'],'');
+    await tester.pumpWidget(const SizedBox());
+    stats['showSongMissing'] = true;
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    expect(find.byType(RhythmSongMissingBadge),findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('enlarged related strip supports multi-select recoverable deletion', (tester) async {
+    rows = List.generate(3,(i) => {...photo(i),'song':'Same song'});
+    var refreshed = false;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RhythmSongRelated(
+      row: rows.first,onReturn: () async { refreshed = true; },onConfirm: () {}))));
+    await tester.pumpAndSettle();
+    final first = find.byKey(const ValueKey('related-photo-1'));
+    expect(tester.getSize(first).width,288);
+    expect(tester.getSize(first).height,252);
+    await tester.longPress(first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('related-photo-2')));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 2 张'),findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton,'删除'));
+    await tester.pumpAndSettle();
+    expect(find.text('移入回收站？'),findsOneWidget);
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(rows.skip(1).every((row) => row['trashed'] == 1),isTrue);
+    expect(refreshed,isTrue);
+    expect(find.byKey(const ValueKey('related-photo-1')),findsNothing);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -212,9 +315,31 @@ void main() {
     stats['songProgress'] = {'total': 10,'completed': 10,'matched': 8,'failed': 1,'waiting': 0};
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
-    expect(find.text('曲名识别 · 处理完成 · 10 / 10'), findsOneWidget);
+    expect(find.byKey(const Key('rhythm-song-progress')), findsNothing);
     expect(calls.any((c) => c.method == 'songProgress'), isTrue);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('deleting an earlier related photo keeps the viewer on its current photo', (tester) async {
+    rows = List.generate(3,(i) => {...photo(i),'song':'Same song'});
+    final controller = RhythmGalleryController();
+    await controller.refresh();
+    await tester.pumpWidget(MaterialApp(home: RhythmViewer(gallery: controller,initialIndex: 1)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('详情'));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const ValueKey('related-photo-0')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton,'删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(controller.items.map((row) => row['id']),['photo-1','photo-2']);
+    await tester.tap(find.byTooltip('返回照片'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('1 / 2'),findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
   });
 
   testWidgets('details loads only other same-song pictures and tap opens selected picture', (tester) async {
@@ -253,7 +378,7 @@ void main() {
     final scan = calls.lastWhere((c) => c.method == 'songLayoutScan').arguments as Map;
     expect(scan['region'],isNotNull);
     expect((scan['region'] as Map)['x'],closeTo(.294,.001));
-    expect(find.textContaining('绑定原始分类：phira'),findsOneWidget);
+    expect(find.textContaining('绑定识别布局：phira'),findsOneWidget);
     await tester.enterText(find.byType(TextField),'Corrected song');
     await tester.ensureVisible(find.text('保存位置与本图歌名'));
     await tester.tap(find.text('保存位置与本图歌名'));
@@ -527,6 +652,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.longPress(find.bySemanticsLabel('Screenshot_0.png'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('删除'));
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
     expect(find.textContaining('移入回收站，可恢复'), findsOneWidget);

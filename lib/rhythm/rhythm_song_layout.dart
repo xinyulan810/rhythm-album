@@ -25,8 +25,7 @@ class _RhythmSongLayoutPageState extends State<RhythmSongLayoutPage> {
   @override
   void initState() {
     super.initState();
-    code = (widget.row['songLayoutCode'] as String? ?? '').isNotEmpty
-        ? widget.row['songLayoutCode'] as String : widget.row['categoryCode'] as String? ?? '';
+    code = widget.row['songLayoutKey'] as String? ?? '';
     title.text = widget.row['song'] as String? ?? '';
     scan();
   }
@@ -83,7 +82,9 @@ class _RhythmSongLayoutPageState extends State<RhythmSongLayoutPage> {
     appBar: AppBar(title: const Text('设置歌名位置')),
     body: ListView(padding: const EdgeInsets.all(16), children: [
       const Text('点选图中的歌名文字框，或拖动框选歌名区域，松手后扫描。位置按图片宽高比例保存。'),
-      Text(code.isEmpty ? '此图尚无游戏编码，请先分类到游戏相册。' : '绑定原始分类：$code（相册改名、合并不会更改）'),
+      Text(code.isEmpty ? '正在识别画面布局…' : code.startsWith('image:')
+          ? '尚未确定共享布局，位置仅绑定本图。'
+          : '绑定识别布局：$code（相册改名、移动不会更改）'),
       const SizedBox(height: 12),
       SizedBox(height: MediaQuery.sizeOf(context).height * .46, child: LayoutBuilder(builder: (context, constraints) {
         final width = math.min(constraints.maxWidth, constraints.maxHeight * ratio);
@@ -114,7 +115,7 @@ class _RhythmSongLayoutPageState extends State<RhythmSongLayoutPage> {
       })),
       const SizedBox(height: 12),
       TextField(controller: title, maxLength: 300, decoration: const InputDecoration(labelText: '本图歌名（可纠正）',
-        helperText: '歌名只确认本图；识别位置用于同一原始编码的其他图片。')),
+        helperText: '歌名只确认本图；识别位置用于同一布局编码的图片。')),
       if (error != null) Text(error!,style: TextStyle(color: Theme.of(context).colorScheme.error)),
       Wrap(spacing: 8, children: [
         TextButton(onPressed: loading || saving || region == null ? null : () => scan(selection: true), child: const Text('扫描选区')),

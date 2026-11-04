@@ -18,6 +18,7 @@ class RhythmSongProgress extends StatelessWidget {
     final failed = (progress['failed'] as num? ?? 0).toInt();
     final waiting = (progress['waiting'] as num? ?? 0).toInt();
     final remaining = (total - done).clamp(0, total);
+    if (remaining == 0) return const SizedBox.shrink();
     final state = remaining == 0 ? '处理完成' : progress['paused'] == true ? '已暂停' : waiting == remaining ? '等待图片处理' : '处理中';
     return ListTile(
       key: const Key('rhythm-song-progress'),
@@ -36,17 +37,72 @@ class RhythmSongProgress extends StatelessWidget {
   }
 }
 
+bool rhythmSongMissing(RhythmPhoto row) =>
+    (row['songManual'] as num? ?? 0) == 0 && (row['songId'] as num? ?? 0) == 0 &&
+    (row['song'] as String? ?? '').trim().isEmpty && (row['songRaw'] as String? ?? '').trim().isEmpty;
+
+class RhythmSongMissingBadge extends StatelessWidget {
+  const new({super.key, this.count});
+  final num? count;
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    triggerMode: TooltipTriggerMode.manual,
+    message: count == null ? '曲名未识别，可选择歌名位置' : '$count 张截图未识别曲名',
+    child: Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(6)),
+      child: const Icon(Icons.music_off_outlined, color: Colors.amber, size: 20),
+    ),
+  );
+}
+
+/// The same recoverable delete flow is available in the detail strip and full collection.
+mixin _SongSelection<T extends StatefulWidget> on State<T> {
+  RhythmGalleryController get gallery;
+  final selectedSongs = <String>{};
+  bool deletingSongs = false;
+  void toggleSong(String id) => setState(() {
+    if (!selectedSongs.remove(id)) selectedSongs.add(id);
+  });
+  Future<void> afterSongDelete(List<String> ids) async {}
+  Future<void> deleteSongs() async {
+    final ids = selectedSongs.toList();
+    if (ids.isEmpty || deletingSongs) return;
+    if (!await confirmRhythm(context, '移入回收站？', '将所选 ${ids.length} 张截图移入回收站，可恢复。系统原图不变。')) return;
+    if (!mounted) return;
+    setState(() => deletingSongs = true);
+    try {
+      await gallery.action('batch', {'ids': ids, 'operation': 'trash'});
+      gallery.viewerChanged = true;
+      selectedSongs.clear();
+      await gallery.refresh();
+      if (mounted) await afterSongDelete(ids);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(RhythmGalleryController.message(e))));
+    } finally {
+      if (mounted) setState(() => deletingSongs = false);
+    }
+  }
+  Widget songSelectionBar() => Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+    Text('已选 ${selectedSongs.length} 张'),
+    TextButton(onPressed: deletingSongs ? null : () => setState(selectedSongs.clear), child: const Text('取消多选')),
+    TextButton.icon(onPressed: deletingSongs ? null : deleteSongs, icon: const Icon(Icons.delete_outline), label: const Text('删除')),
+  ]);
+}
+
 /// Uses the Aves details section divider; identity comes from the song catalogue.
 class RhythmSongRelated extends StatefulWidget {
-  const new({super.key, required this.row, required this.onReturn, required this.onConfirm});
+  const new({super.key, required this.row, required this.onReturn, required this.onConfirm, this.onDeleted});
   final RhythmPhoto row;
   final Future<void> Function() onReturn;
   final VoidCallback onConfirm;
+  final ValueChanged<List<String>>? onDeleted;
   @override
   State<RhythmSongRelated> createState() => _RhythmSongRelatedState();
 }
 
-class _RhythmSongRelatedState extends State<RhythmSongRelated> {
+class _RhythmSongRelatedState extends State<RhythmSongRelated> with _SongSelection<RhythmSongRelated> {
+  @override
   final gallery = RhythmGalleryController();
   bool opening = false;
   bool get hasTitle => (widget.row['songId'] as num? ?? 0) > 0 ||
@@ -60,6 +116,11 @@ class _RhythmSongRelatedState extends State<RhythmSongRelated> {
     if (hasTitle) gallery.refresh();
   }
   void changed() { if (mounted) setState(() {}); }
+  @override
+  Future<void> afterSongDelete(List<String> ids) async {
+    widget.onDeleted?.call(ids);
+    await widget.onReturn();
+  }
   @override
   void dispose() { gallery.removeListener(changed); gallery.dispose(); super.dispose(); }
   Future<void> open(int index) async {
@@ -80,6 +141,7 @@ class _RhythmSongRelatedState extends State<RhythmSongRelated> {
       const SectionRow(icon: Icons.photo_library_outlined),
       Text('同曲截图${hasTitle ? ' · ${gallery.total} 张' : ''}', style: Theme.of(context).textTheme.titleMedium),
       const SizedBox(height: 8),
+      if (selectedSongs.isNotEmpty) songSelectionBar(),
       if (!hasTitle)
         TextButton(onPressed: widget.onConfirm, child: const Text('尚未识别到曲名，可手动填写'))
       else if (gallery.error != null)
@@ -87,7 +149,7 @@ class _RhythmSongRelatedState extends State<RhythmSongRelated> {
       else if (!gallery.loading && gallery.items.isEmpty)
         const Text('暂未找到同曲或曲名相似的截图')
       else
-        SizedBox(height: 126, child: ListView.separated(
+        SizedBox(height: 252, child: ListView.separated(
           scrollDirection: Axis.horizontal,
           itemCount: gallery.items.length + (gallery.more ? 1 : 0),
           separatorBuilder: (_, _) => const SizedBox(width: 8),
@@ -97,16 +159,22 @@ class _RhythmSongRelatedState extends State<RhythmSongRelated> {
             }
             final row = gallery.items[index];
             final path = row['thumbnail'] as String? ?? '';
-            return SizedBox(width: 144, child: InkWell(
+            final id = row['id'] as String;
+            return SizedBox(width: 288, child: InkWell(
               key: ValueKey('related-${row['id']}'),
-              onTap: opening ? null : () => open(index),
+              onTap: opening || deletingSongs ? null : () => selectedSongs.isEmpty ? open(index) : toggleSong(id),
+              onLongPress: opening || deletingSongs ? null : () => toggleSong(id),
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8), child:
+                Expanded(child: Stack(fit: StackFit.expand, children: [
+                  ClipRRect(borderRadius: BorderRadius.circular(8), child:
                   path.isEmpty ? const ColoredBox(color: Colors.white12, child: Icon(Icons.image_outlined)) :
-                  Image.file(File(path), fit: BoxFit.cover, cacheWidth: 320, errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)))),
+                  Image.file(File(path), fit: BoxFit.contain, cacheWidth: 640, errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined))),
+                  if (selectedSongs.isNotEmpty) Positioned(top: 4,right: 4,
+                    child: Icon(selectedSongs.contains(id) ? Icons.check_circle : Icons.radio_button_unchecked, color: Colors.amber)),
+                ])),
                 const SizedBox(height: 4),
                 Text(rhythmDate(row, time: true), maxLines: 1, style: Theme.of(context).textTheme.labelSmall),
-                Text((widget.row['songId'] as num? ?? 0) > 0 && row['songId'] == widget.row['songId'] ? '已关联同曲' : '曲名文字相似',
+                Text('${row['game'] ?? ''} · ${(widget.row['songId'] as num? ?? 0) > 0 && row['songId'] == widget.row['songId'] ? '已关联同曲' : '曲名文字相似'}',
                   style: Theme.of(context).textTheme.labelSmall),
               ]),
             ));
@@ -227,16 +295,20 @@ class _SongDialogState extends State<_SongDialog> {
 
 /// A separate controller avoids replacing the underlying viewer's photo list.
 class RhythmSongPage extends StatefulWidget {
-  const new({super.key, required this.songId, required this.title, this.relatedTo = ''});
+  const new({super.key, required this.songId, required this.title, this.relatedTo = '', this.onDeleted});
   final int songId;
   final String relatedTo;
   final String title;
+  final ValueChanged<List<String>>? onDeleted;
   @override
   State<RhythmSongPage> createState() => _RhythmSongPageState();
 }
 
-class _RhythmSongPageState extends State<RhythmSongPage> {
+class _RhythmSongPageState extends State<RhythmSongPage> with _SongSelection<RhythmSongPage> {
+  @override
   final gallery = RhythmGalleryController();
+  @override
+  Future<void> afterSongDelete(List<String> ids) async => widget.onDeleted?.call(ids);
   @override
   void initState() {
     super.initState();
@@ -254,19 +326,31 @@ class _RhythmSongPageState extends State<RhythmSongPage> {
     body: Column(children: [
       Padding(padding: const EdgeInsets.all(12), child: Text('同曲及曲名相似截图 ${gallery.total} 张 · 可能误匹配，最多 400 张')),
       if (gallery.error != null) Text(gallery.error!),
+      if (selectedSongs.isNotEmpty) songSelectionBar(),
       Expanded(child: NotificationListener<ScrollNotification>(
         onNotification: (n) { if (n.metrics.extentAfter < 400) gallery.loadMore(); return false; },
         child: GridView.builder(
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 180, crossAxisSpacing: 4, mainAxisSpacing: 4),
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 360, crossAxisSpacing: 4, mainAxisSpacing: 4),
           itemCount: gallery.items.length,
           itemBuilder: (context, index) {
             final item = gallery.items[index];
             final path = item['thumbnail'] as String? ?? '';
-            return InkWell(onTap: () async {
+            final id = item['id'] as String;
+            return InkWell(
+              key: ValueKey('song-photo-$id'),
+              onLongPress: deletingSongs ? null : () => toggleSong(id),
+              onTap: deletingSongs ? null : () async {
+              if (selectedSongs.isNotEmpty) { toggleSong(id); return; }
               await Navigator.push<void>(context, MaterialPageRoute(builder: (_) => RhythmViewer(gallery: gallery, initialIndex: index)));
               if (mounted) await gallery.refresh();
-            }, child: path.isEmpty ? const Icon(Icons.image_outlined) :
-              Image.file(File(path), fit: BoxFit.cover, cacheWidth: 360, errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)));
+            }, child: Stack(fit: StackFit.expand, children: [
+              path.isEmpty ? const Icon(Icons.image_outlined) :
+                Image.file(File(path), fit: BoxFit.contain, cacheWidth: 720, errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)),
+              if (selectedSongs.isNotEmpty) Positioned(top: 4,right: 4,
+                child: Icon(selectedSongs.contains(id) ? Icons.check_circle : Icons.radio_button_unchecked,color: Colors.amber)),
+              Positioned(bottom: 0,left: 0,right: 0,child: ColoredBox(color: Colors.black54,child: Text(
+                '${item['game'] ?? ''}\n${rhythmDate(item,time: true)}',style: const TextStyle(color: Colors.white,fontSize: 12)))),
+            ]));
           },
         ),
       )),

@@ -256,6 +256,7 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
     }
     private fun dispatch(call: MethodCall): Any? = when (call.method) {
         "songLicense" -> activity.assets.open("rhythm-arcaea-LICENSE.txt").bufferedReader().use { it.readText() }
+        "pinyinLicense" -> activity.assets.open("rhythm-pinyin-LICENSE.txt").bufferedReader().use { it.readText() }
         "songInfo" -> store.get(requireNotNull(call.argument<String>("id")))
         "songProgress" -> store.songProgress()
         "searchHistory" -> org.json.JSONArray(store.prefs.getString("searchHistory","[]")).let { a ->
@@ -279,7 +280,7 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
         "songLayoutSave" -> store.operations.withLock {
             val id = requireNotNull(call.argument<String>("id"))
             val previous = store.get(id)
-            val code = RhythmSongLayouts.code(previous)
+            val code = RhythmSongLayouts.layoutKey(previous)
             val region = call.argument<Map<String, Number>>("region")
             val box = region?.let { RhythmSongLayouts.Box(it.getValue("x").toDouble(),it.getValue("y").toDouble(),
                 it.getValue("right").toDouble(),it.getValue("bottom").toDouble()) }
@@ -292,6 +293,10 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             }
             RhythmWorker.schedule(activity)
             store.get(id)
+        }
+        "showSongMissing" -> {
+            check(store.prefs.edit().putBoolean("showSongMissing", call.argument<Boolean>("enabled") != false).commit())
+            true
         }
         "songSearch" -> store.songs.search(call.argument<String>("query").orEmpty().take(200))
         "songAssign" -> store.operations.withLock {
@@ -354,7 +359,10 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
                         where.add("(${RhythmAchievement.EFFECTIVE_SQL}=? OR instr(' '||upper(replace(tags,',',' '))||' ',?)>0)")
                         args.add(badge); args.add(" $badge ")
                     } else {
-                        where.add("(instr(lower(name),lower(?))>0 OR instr(lower(game),lower(?))>0 OR instr(lower(song),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR categoryCode IN (SELECT c.code FROM categories c JOIN categories t ON t.code=c.target WHERE instr(lower(t.name),lower(?))>0) OR instr(ocrSearch,?)>0 OR songId IN (SELECT songId FROM song_names WHERE instr(nameKey,?)>0))")
+                        val phonetic = store.phoneticIds(term)
+                        // IDs are database values, escaped as literals to avoid SQLite bind limits on large libraries.
+                        val readingClause = if (phonetic.isEmpty()) "0" else "id IN (${phonetic.joinToString(",") { android.database.DatabaseUtils.sqlEscapeString(it) }})"
+                        where.add("(instr(lower(name),lower(?))>0 OR instr(lower(game),lower(?))>0 OR instr(lower(song),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR categoryCode IN (SELECT c.code FROM categories c JOIN categories t ON t.code=c.target WHERE instr(lower(t.name),lower(?))>0) OR instr(ocrSearch,?)>0 OR songId IN (SELECT songId FROM song_names WHERE instr(nameKey,?)>0) OR $readingClause)")
                         repeat(5) { args.add(term) }
                         args.add(RhythmAchievement.searchKey(term))
                         args.add(RhythmSongMatcher.key(term))
@@ -382,11 +390,13 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
                 "SELECT id FROM images WHERE ${where.joinToString(" AND ")} ORDER BY taken DESC,id DESC", args.toTypedArray()
             ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
             else mapOf("items" to store.query(where.joinToString(" AND "), args.toTypedArray(), limit, offset,
-                    call.argument<Boolean>("ascending") == true),
+                    call.argument<Boolean>("ascending") == true,
+                    if (relatedTo.isEmpty()) null else RhythmSongLayouts.code(store.get(relatedTo))),
                 "total" to store.count(where.joinToString(" AND "), args.toTypedArray()),
                 "stats" to (store.stats() + mapOf("notifications" to notificationState(),
                     "workerError" to store.prefs.getString("workerError", "").orEmpty(),
                     "autoImport" to store.prefs.getBoolean("autoImport", false),
+                    "showSongMissing" to store.prefs.getBoolean("showSongMissing", true),
                     "mediaAccess" to RhythmAutoImport.permission(activity),
                     "lastScan" to store.prefs.getLong("lastScan", 0),
                     "scanError" to store.prefs.getString("scanError", "").orEmpty(),

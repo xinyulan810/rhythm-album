@@ -20,6 +20,7 @@ import 'rhythm_name_dialog.dart';
 import 'rhythm_native_licenses.dart';
 import 'rhythm_motion.dart';
 import 'rhythm_song.dart';
+import 'rhythm_song_layout.dart';
 
 class RhythmLibraryPage extends StatefulWidget {
   const new({super.key});
@@ -149,6 +150,43 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
       setState(() => showingAlbums = false);
     }
     _filter(() => gallery.search = value);
+  }
+
+  void _returnToAlbums() {
+    debounce?.cancel();
+    search.clear();
+    searchFocus.unfocus();
+    gallery.framePhases.mark('albums_idle');
+    setState(() {
+      showingAlbums = true;
+      collectionTitle = '全部截图';
+    });
+    _filter(() {
+      gallery.search = '';
+      gallery.category = '';
+      gallery.album = '';
+      gallery.favorite = false;
+      gallery.achievement = '';
+      gallery.trash = false;
+      gallery.songId = 0;
+      gallery.relatedTo = '';
+      gallery.excludeId = '';
+    });
+  }
+
+  Future<void> _chooseSongLayout() async {
+    if (selected.length != 1) return;
+    final id = selected.single;
+    await _run(() async {
+      final data = await gallery.action('songInfo', {'id': id});
+      if (data is! Map || !mounted) return null;
+      final row = Map<String,dynamic>.from(data);
+      final path = await gallery.path(row);
+      if (!mounted || path == null) return null;
+      await Navigator.push<Map<String,dynamic>>(context, MaterialPageRoute(
+        builder: (_) => RhythmSongLayoutPage(row: row,imagePath: path)));
+      return null;
+    });
   }
 
   void _changed() {
@@ -581,6 +619,12 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                 onTap: () => Navigator.pop(context, 'songRetry'),
               ),
               ListTile(leading: const Icon(Icons.info_outline), title: const Text('关于音游相册 · 0.4.0'), subtitle: const Text('代管截图删除原图须系统确认。回收站不自动清空；卸载前请导出。'), onTap: () => Navigator.pop(context, 'about')),
+              SwitchListTile(
+                title: const Text('显示未识别曲名提示'),
+                subtitle: const Text('在相册和照片上显示提示角标'),
+                value: stats['showSongMissing'] != false,
+                onChanged: (_) => Navigator.pop(context, 'showSongMissing'),
+              ),
             ],
           ),
         ),
@@ -588,6 +632,8 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
     );
     if (!mounted || action == null) return;
     switch (action) {
+      case 'showSongMissing':
+        await _run(() => gallery.action('showSongMissing', {'enabled': stats['showSongMissing'] == false}));
       case 'managedMode':
         if (stats['managedScreenshots'] == true) {
           await _run(() => gallery.action('managedMode', {'enabled': false}));
@@ -649,8 +695,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
           } else if (gallery.trash) {
             _filter(() => gallery.trash = false);
           } else {
-            gallery.framePhases.mark('albums_idle');
-            setState(() => showingAlbums = true);
+            _returnToAlbums();
           }
         }
       },
@@ -665,8 +710,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                     } else if (gallery.trash) {
                       _filter(() => gallery.trash = false);
                     } else {
-                      gallery.framePhases.mark('albums_idle');
-                      setState(() => showingAlbums = true);
+                      _returnToAlbums();
                     }
                   },
                 )
@@ -749,6 +793,9 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                           _batchButton('恢复', Icons.restore, 'restore'),
                           _batchButton('永久删除', Icons.delete_forever, 'purge'),
                         ] else ...[
+                          TextButton.icon(
+                            onPressed: busy || selected.length != 1 ? null : _chooseSongLayout,
+                            icon: const Icon(Icons.document_scanner_outlined), label: const Text('选择歌名位置')),
                           _batchButton('收藏', Icons.favorite_border, 'favorite'),
                           _batchButton('相册', Icons.folder_outlined, 'album'),
                           _batchButton('分类', Icons.category_outlined, 'category'),
@@ -1119,9 +1166,11 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
   Widget _albumHome() {
     final categories = (gallery.stats['categories'] as List? ?? []).cast<Map>();
     final entries = <Map>[
-      {'code': '', 'name': '全部截图', 'count': gallery.stats['count'] ?? 0, 'icon': Icons.photo_library_outlined},
+      {'code': '', 'name': '全部截图', 'count': gallery.stats['count'] ?? 0, 'icon': Icons.photo_library_outlined,
+        'songMissing': gallery.stats['songMissing'] ?? 0},
       ...categories,
-      {'code': 'other', 'name': '其他', 'count': gallery.stats['otherCount'] ?? 0, 'icon': Icons.photo_outlined},
+      {'code': 'other', 'name': '其他', 'count': gallery.stats['otherCount'] ?? 0, 'icon': Icons.photo_outlined,
+        'songMissing': gallery.stats['otherSongMissing'] ?? 0},
     ];
     return RefreshIndicator(
       onRefresh: gallery.refresh,
@@ -1194,6 +1243,8 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                             child: selecting ? const SizedBox() : IconButton(tooltip: '重命名 $name', icon: const Icon(Icons.edit_outlined, size: 20), onPressed: busy ? null : () => _renameAlbum(entry)),
                           ),
                         ),
+                      if (gallery.stats['showSongMissing'] != false && (entry['songMissing'] as num? ?? 0) > 0)
+                        Positioned(top: 6,right: 6,child: RhythmSongMissingBadge(count: entry['songMissing'] as num)),
                     ],
                   ),
                 ),
@@ -1300,7 +1351,9 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
               ),
             ),
             if ((row['favorite'] as num? ?? 0) == 1) const Positioned(bottom: 5, left: 5, child: Icon(Icons.favorite, color: Colors.white, size: 18)),
-            if (row['status'] == 'error') const Positioned(bottom: 5, right: 5, child: Icon(Icons.error_outline, color: Colors.orange)),
+            if (gallery.stats['showSongMissing'] != false && rhythmSongMissing(row))
+              const Positioned(bottom: 5,right: 5,child: RhythmSongMissingBadge()),
+            if (row['status'] == 'error') const Positioned(bottom: 38, right: 5, child: Icon(Icons.error_outline, color: Colors.orange)),
           ],
         ),
       ),

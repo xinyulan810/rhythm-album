@@ -139,6 +139,18 @@ class RhythmGalleryController extends ChangeNotifier {
 
   Future<Object?> action(String method, [Map<String, dynamic>? arguments]) => channel.invokeMethod<Object?>(method, arguments);
 
+  void removeLoadedPhotos(Set<String> ids) {
+    final before = items.length;
+    items.removeWhere((row) => ids.contains(row['id']));
+    final removed = before - items.length;
+    if (removed == 0) return;
+    _offset = (_offset - removed).clamp(0, _offset);
+    total = (total - removed).clamp(0, total);
+    dataVersion++;
+    viewerChanged = true;
+    _notify();
+  }
+
   Future<String?> path(RhythmPhoto item, {bool retry = false}) {
     final id = item['id'] as String;
     if (retry) _paths.remove(id);

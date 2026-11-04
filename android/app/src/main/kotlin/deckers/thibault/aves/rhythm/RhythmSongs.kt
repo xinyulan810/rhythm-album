@@ -131,9 +131,12 @@ class RhythmSongs(private val store: RhythmStore) {
         ensureCatalog()
         val key = RhythmSongMatcher.key(query)
         if (key.isBlank()) return emptyList()
-        return db.rawQuery("""SELECT DISTINCT s.id,s.title,s.artist FROM songs s JOIN song_names n ON n.songId=s.id
-            WHERE instr(n.nameKey,?)>0 ORDER BY s.title LIMIT 30""", arrayOf(key)).use {
-            buildList { while (it.moveToNext()) add(mapOf("id" to it.getLong(0), "title" to it.getString(1), "artist" to it.getString(2))) }
+        return db.rawQuery("""SELECT s.id,s.title,s.artist,n.name,n.nameKey FROM songs s JOIN song_names n ON n.songId=s.id
+            ORDER BY s.title""", null).use { c ->
+            val found = linkedMapOf<Long,Map<String,Any>>()
+            while (c.moveToNext() && found.size < 30) if (c.getString(4).contains(key) || store.readings.matches(c.getString(3),query))
+                found[c.getLong(0)] = mapOf("id" to c.getLong(0),"title" to c.getString(1),"artist" to c.getString(2))
+            found.values.toList()
         }
     }
     /** Discovery only: never changes identities or confirms a fuzzy result. */
@@ -148,8 +151,11 @@ class RhythmSongs(private val store: RhythmStore) {
             val linked = songId > 0 && (row["songId"] as Number).toLong() == songId
             val values = listOf(row["song"] as String,row["songRaw"] as String).map(RhythmSongMatcher::compact).filter(String::isNotBlank)
             val score = if (linked) 2.0 else titles.maxOfOrNull { a -> values.maxOfOrNull { b -> relatedScore(a,b) } ?: 0.0 } ?: 0.0
-            if (score >= .42) (row["id"] as String) to score else null
-        }.sortedByDescending { it.second }.take(400).map { it.first }
+            if (score >= .42) row else null
+        }.sortedWith(compareByDescending<Map<String,Any>> {
+            RhythmSongLayouts.code(it) == RhythmSongLayouts.code(source)
+        }.thenByDescending { (it["taken"] as Number).toLong() }.thenByDescending { it["id"] as String })
+            .take(400).map { it["id"] as String }
     }
     private fun relatedScore(a: String, b: String): Double {
         if (a == b) return 1.0
@@ -163,7 +169,7 @@ class RhythmSongs(private val store: RhythmStore) {
         return RhythmSongMatcher.similarity(a,b)
     }
     companion object {
-        const val VERSION = 2
+        const val VERSION = 3
         fun migrate(db: SQLiteDatabase) {
             db.execSQL("CREATE TABLE songs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,artist TEXT NOT NULL,origin TEXT NOT NULL)")
             db.execSQL("CREATE TABLE song_sources(game TEXT NOT NULL,provider TEXT NOT NULL,sourceId TEXT NOT NULL,songId INTEGER NOT NULL,PRIMARY KEY(game,provider,sourceId))")

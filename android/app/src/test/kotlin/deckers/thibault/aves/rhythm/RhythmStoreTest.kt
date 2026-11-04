@@ -13,6 +13,30 @@ import kotlin.concurrent.withLock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class RhythmStoreTest {
+    @Test fun v8MigrationPreservesRecognitionAndCreatesIndependentLayoutFields() {
+        val context = RuntimeEnvironment.getApplication()
+        val old = context.openOrCreateDatabase("rhythm-benchmark-layout-v8.db",Context.MODE_PRIVATE,null)
+        old.execSQL("CREATE TABLE images(id TEXT PRIMARY KEY,songLayoutCode TEXT,song TEXT,songManual INTEGER)")
+        old.execSQL("INSERT INTO images VALUES('sample','arcaea','Confirmed song',1)")
+        old.version = 8
+        old.close()
+        val upgraded = RhythmStore(context,true,"layout-v8")
+        try {
+            upgraded.readableDatabase.rawQuery("SELECT * FROM images",null).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("Confirmed song",c.getString(c.getColumnIndexOrThrow("song")))
+                assertEquals(1,c.getInt(c.getColumnIndexOrThrow("songManual")))
+                assertEquals("arcaea",c.getString(c.getColumnIndexOrThrow("songLayoutCode")))
+                assertEquals("",c.getString(c.getColumnIndexOrThrow("songLayoutKey")))
+                assertEquals("",c.getString(c.getColumnIndexOrThrow("songLayoutAnchor")))
+            }
+            assertTrue(upgraded.prefs.getBoolean("showSongMissing",true))
+            assertTrue(upgraded.prefs.edit().putBoolean("showSongMissing",false).commit())
+        } finally { upgraded.close() }
+        val reopened = RhythmStore(context,true,"layout-v8")
+        try { assertFalse(reopened.prefs.getBoolean("showSongMissing",true)) }
+        finally { reopened.close() }
+    }
     @Test fun v7MigrationIndexesUnconfirmedAndSingleCharacterTitles() {
         val context = RuntimeEnvironment.getApplication()
         val initial = RhythmStore(context,true,"song-v7")

@@ -33,7 +33,7 @@ class RhythmCategories(private val store: RhythmStore) {
             arrayOf(code, "BanG Dream! · 抽卡", nameKey("BanG Dream! · 抽卡"), parent))
     }
     fun albums(): List<Map<String, Any>> = db.rawQuery(
-        """SELECT c.target,t.name,COUNT(*),MAX(i.taken) FROM images i
+        """SELECT c.target,t.name,COUNT(*),MAX(i.taken),SUM(CASE WHEN ${RhythmStore.SONG_MISSING} THEN 1 ELSE 0 END) FROM images i
            JOIN categories c ON c.code=i.categoryCode JOIN categories t ON t.code=c.target
            WHERE i.trashed=0 AND c.target!='other' AND (i.status='compressed' OR i.manualCategory=1)
            GROUP BY c.target,t.name ORDER BY (t.name=''),MAX(i.taken) DESC,c.target""", null).use { c ->
@@ -43,6 +43,7 @@ class RhythmCategories(private val store: RhythmStore) {
                 val id = ids(listOf(code), 1).firstOrNull()
                 add(mapOf("code" to c.getString(0), "name" to c.getString(1),
                     "count" to c.getLong(2), "latest" to c.getLong(3),
+                    "songMissing" to c.getLong(4),
                     "thumbnail" to (id?.let { java.io.File(store.directory(it), "thumbnail.jpg").path } ?: "")))
             }
         }
@@ -164,8 +165,6 @@ class RhythmCategories(private val store: RhythmStore) {
                 val row = store.get(id)
                 require((row["trashed"] as Number).toInt() != 2)
                 store.update(id, "categoryCode" to code, "classified" to 1, "manualCategory" to 1,
-                    "songLayoutCode" to (row["songLayoutCode"] as String).ifBlank {
-                        (row["categoryCode"] as String).ifBlank { code } },
                     "game" to name.trim().take(100), "eligible" to if (other) 0 else 1)
             }
             db.setTransactionSuccessful()

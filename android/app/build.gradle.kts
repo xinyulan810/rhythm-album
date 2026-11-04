@@ -84,6 +84,10 @@ android {
         versionName = flutter.versionName
         manifestPlaceholders["googleApiKey"] = keystoreProperties["googleApiKey"] ?: "NONE"
         multiDexEnabled = true
+        // Flutter adds all supported ABIs here before this script runs.
+        // Those defaults are unioned with build-type filters; release must
+        // own its ABI set below instead of merely adding ARM64 to that union.
+        ndk { abiFilters.clear() }
         externalNativeBuild {
             cmake { arguments += listOf("-DANDROID_STL=c++_shared") }
         }
@@ -178,7 +182,9 @@ android {
             if (useNdkAbiFilters) {
                 ndk {
                     //noinspection ChromeOsAbiSupport
-                    abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+                    // The distributed Flutter release targets ARM64. Do not bundle
+                    // dependency/CMake libraries for ABIs without a Flutter engine.
+                    abiFilters += listOf("arm64-v8a")
                 }
             }
         }
@@ -233,7 +239,6 @@ repositories {
     maven {
         url = uri("https://jitpack.io")
         content {
-            includeGroup("com.github.contentauth")
             includeGroup("com.github.deckerst")
             includeGroup("com.github.deckerst.mp4parser")
         }
@@ -267,7 +272,6 @@ dependencies {
     implementation(libs.androidx.work.runtime)
 
     implementation(libs.commonsware.cwac)
-    implementation(libs.contentauth.c2pa)
     implementation(libs.metadata.extractor)
     implementation(libs.glide)
     implementation(libs.google.material)

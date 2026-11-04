@@ -8,10 +8,59 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.File
+import kotlin.concurrent.withLock
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class RhythmStoreTest {
+    @Test fun v7MigrationIndexesUnconfirmedAndSingleCharacterTitles() {
+        val context = RuntimeEnvironment.getApplication()
+        val initial = RhythmStore(context,true,"song-v7")
+        initial.enqueue("content://v7/one","Screenshot1.jpg","",false)
+        initial.enqueue("content://v7/two","Screenshot2.jpg","",false)
+        val ids = initial.query().map { it["id"] as String }
+        ids.forEach { initial.update(it,"songRaw" to "雪","song" to "雪","status" to "ready") }
+        initial.writableDatabase.execSQL("DROP TABLE image_song_grams")
+        initial.writableDatabase.version = 7
+        initial.close()
+        val upgraded = RhythmStore(context,true,"song-v7")
+        try {
+            assertEquals(listOf(ids[1]),upgraded.songs.relatedIds(ids[0]))
+            upgraded.update(ids[1],"song" to "Other title","songRaw" to "Other title")
+            assertTrue(upgraded.songs.relatedIds(ids[0]).isEmpty())
+        } finally { upgraded.close() }
+    }
+
+    @Test fun songRecognitionQueueIsBoundedAndSelectsOnlyEligibleAutomaticRows() {
+        val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"song-queue")
+        try {
+            repeat(6) { store.enqueue("content://queue/$it","Screenshot$it.jpg","",false) }
+            val rows = store.query()
+            rows.forEach { store.update(it["id"] as String,"status" to "ready","classified" to 1,
+                "ocrVersion" to 1,"songVersion" to 0) }
+            store.update(rows[0]["id"] as String,"songManual" to 1)
+            store.update(rows[1]["id"] as String,"songError" to "failed")
+            store.update(rows[2]["id"] as String,"trashed" to 1)
+            assertEquals(3,store.songQueue(3).size)
+            assertEquals(1,store.songQueue(0).size)
+            assertEquals(3,store.songQueue(40).size)
+        } finally { store.close() }
+    }
+
+    @Test fun manualOverrideGenerationCancelsStaleSongWrites() {
+        val store = RhythmStore(RuntimeEnvironment.getApplication(),true,"song-generation")
+        try {
+            store.enqueue("content://generation/1","Screenshot.jpg","",false)
+            val id = store.query().single()["id"] as String
+            val started = store.songGeneration
+            store.operations.withLock { store.songGeneration++ }
+            var applied = false
+            assertFalse(store.commitSongResult(id,started) { applied = true })
+            assertFalse(applied)
+            assertTrue(store.commitSongResult(id,store.songGeneration) { applied = true })
+            assertTrue(applied)
+        } finally { store.close() }
+    }
     @Test
     fun upgradesV1AndPreservesSourceDeduplicationAndReferencedAnchors() {
         val context = RuntimeEnvironment.getApplication()

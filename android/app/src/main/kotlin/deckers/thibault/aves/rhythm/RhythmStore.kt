@@ -12,13 +12,16 @@ import java.util.UUID
 
 /** Private library only. Never deletes or opens a system content URI for writing. */
 class RhythmStore internal constructor(val context: Context, private val isolated: Boolean = false, private val benchmarkRun: String = "default") :
-    SQLiteOpenHelper(context, if (isolated) "rhythm-benchmark-$benchmarkRun.db" else "rhythm-library-v1.db", null, 5) {
+    SQLiteOpenHelper(context, if (isolated) "rhythm-benchmark-$benchmarkRun.db" else "rhythm-library-v1.db", null, 8) {
     val operations = java.util.concurrent.locks.ReentrantLock(true)
+    @Volatile var songGeneration = 0L
+    @Volatile var songParallel = 0
     val freshIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     val root = File(context.filesDir, if (isolated) "rhythm-benchmark-$benchmarkRun" else "rhythm-library").apply { mkdirs() }
     val cacheRoot = if (isolated) File(context.cacheDir, "rhythm-benchmark-$benchmarkRun").apply { mkdirs() } else context.cacheDir
     val prefs = context.getSharedPreferences(if (isolated) "rhythm-benchmark" else "rhythm-library", Context.MODE_PRIVATE)
     val categories by lazy { RhythmCategories(this) }
+    val songs by lazy { RhythmSongs(this) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE images(
             id TEXT PRIMARY KEY, source TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
@@ -35,12 +38,33 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         upgradeCategories(db)
         upgradeOcr(db)
         upgradeManaged(db)
+        RhythmSongs.migrate(db)
+        upgradeSongLayout(db)
+        upgradeSongGrams(db)
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) upgradeGallery(db)
         if (oldVersion < 3) upgradeCategories(db)
         if (oldVersion < 4) upgradeOcr(db)
         if (oldVersion < 5) upgradeManaged(db)
+        if (oldVersion < 6) RhythmSongs.migrate(db)
+        if (oldVersion < 7) upgradeSongLayout(db)
+        if (oldVersion < 8) upgradeSongGrams(db)
+    }
+    private fun upgradeSongGrams(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE image_song_grams(imageId TEXT NOT NULL,gram TEXT NOT NULL,PRIMARY KEY(imageId,gram))")
+        db.execSQL("CREATE INDEX image_song_gram_lookup ON image_song_grams(gram,imageId)")
+        db.rawQuery("SELECT id,song,songRaw FROM images",null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val values = listOf(cursor.getString(1),cursor.getString(2)).flatMap(::songGrams).distinct()
+                values.forEach { db.execSQL("INSERT OR IGNORE INTO image_song_grams(imageId,gram) VALUES(?,?)",arrayOf(id,it)) }
+            }
+        }
+    }
+    private fun upgradeSongLayout(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE images ADD COLUMN songLayoutCode TEXT NOT NULL DEFAULT ''")
+        db.execSQL("UPDATE images SET songLayoutCode=categoryCode")
     }
     private fun upgradeManaged(db: SQLiteDatabase) {
         db.execSQL("ALTER TABLE images ADD COLUMN sourceRemoved INTEGER NOT NULL DEFAULT 0")
@@ -115,6 +139,21 @@ class RhythmStore internal constructor(val context: Context, private val isolate
             else -> error("Invalid database value")
         }
         writableDatabase.update("images", values, "id=?", arrayOf(id))
+        if (fields.any { it.first == "song" || it.first == "songRaw" }) {
+            val db = writableDatabase
+            db.delete("image_song_grams","imageId=?",arrayOf(id))
+            val row = db.rawQuery("SELECT song,songRaw FROM images WHERE id=?",arrayOf(id)).use {
+                if (it.moveToFirst()) listOf(it.getString(0),it.getString(1)) else emptyList()
+            }
+            row.flatMap(::songGrams).distinct().forEach {
+                db.execSQL("INSERT OR IGNORE INTO image_song_grams(imageId,gram) VALUES(?,?)",arrayOf(id,it))
+            }
+        }
+    }
+    private fun songGrams(value: String): Set<String> {
+        val compact = RhythmSongMatcher.compact(value).take(300)
+        if (compact.isEmpty()) return emptySet()
+        return if (compact.length < 3) setOf(compact) else compact.windowed(3).toSet()
     }
     fun query(where: String = "1", args: Array<String> = emptyArray(), limit: Int = 100, offset: Int = 0,
               ascending: Boolean = false): List<Map<String, Any>> {
@@ -146,7 +185,8 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         queueFirst("queued")?.let { return it }
         return query("classified=0 AND trashed=0 AND status IN ('pending','compressed','ready')", limit = 1).firstOrNull() ?:
         queueFirst("pending") ?:
-        query("ocrVersion=0 AND ocrError='' AND trashed=0 AND status IN ('compressed','ready')", limit = 1).firstOrNull()
+        query("ocrVersion=0 AND ocrError='' AND trashed=0 AND status IN ('compressed','ready')", limit = 1).firstOrNull() ?:
+        query("songVersion<${RhythmSongs.VERSION} AND songManual=0 AND songError='' AND ocrVersion>0 AND trashed=0 AND status IN ('compressed','ready')", limit = 1).firstOrNull()
     }
     private fun queueFirst(status: String): Map<String, Any>? {
         var id: String? = null
@@ -177,7 +217,59 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         result["canUndoCategory"] = categories.canUndo()
         result["ocrPending"] = count("ocrVersion=0 AND ocrError='' AND trashed=0 AND status IN ('compressed','ready')", emptyArray())
         result["ocrErrors"] = count("ocrError!='' AND trashed=0", emptyArray())
+        result["songPending"] = count("songVersion<${RhythmSongs.VERSION} AND songManual=0 AND songError='' AND ocrVersion>0 AND trashed=0 AND status IN ('compressed','ready')", emptyArray())
+        result["songErrors"] = count("songError!='' AND trashed=0", emptyArray())
+        result["songProgress"] = songProgress()
         return result
+    }
+    fun songProgress(): Map<String, Any> = readableDatabase.rawQuery("""
+        SELECT COUNT(*),
+        COALESCE(SUM(CASE WHEN songVersion>=${RhythmSongs.VERSION} OR songManual=1 OR songError!='' OR ocrError!='' THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN songError!='' OR (ocrError!='' AND songManual=0 AND songVersion<${RhythmSongs.VERSION}) THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN songId>0 THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN songVersion<${RhythmSongs.VERSION} AND songManual=0 AND songError='' AND ocrError='' AND
+            (ocrVersion=0 OR status NOT IN ('compressed','ready')) THEN 1 ELSE 0 END),0)
+        FROM images WHERE trashed=0 AND status IN ('queued','pending','processing','compressed','ready')
+        """, null).use {
+        it.moveToFirst()
+        mapOf("total" to it.getLong(0), "completed" to it.getLong(1),
+            "failed" to it.getLong(2), "matched" to it.getLong(3), "waiting" to it.getLong(4),
+            "parallel" to songParallel,
+            "paused" to prefs.getBoolean("paused", false))
+    }
+    fun songQueue(limit: Int) = query(
+        "songVersion<${RhythmSongs.VERSION} AND songManual=0 AND songError='' AND ocrVersion>0 AND classified=1 AND trashed=0 AND status IN ('compressed','ready')",
+        limit = limit.coerceIn(1,32))
+    fun relatedCandidates(title: String, linkedId: Long, imageId: String): List<Map<String, Any>> {
+        val normalized = RhythmSongMatcher.compact(title).take(300)
+        val grams = songGrams(normalized)
+        val candidates = linkedSetOf<String>()
+        if (grams.isNotEmpty()) {
+            val placeholders = grams.joinToString(",") { "?" }
+            readableDatabase.rawQuery("""SELECT g.imageId FROM image_song_grams g JOIN images i ON i.id=g.imageId
+                WHERE g.gram IN ($placeholders) AND i.trashed=0 AND i.id!=?
+                GROUP BY g.imageId ORDER BY COUNT(*) DESC LIMIT 400""", (grams.toList()+imageId).toTypedArray()).use {
+                while (it.moveToNext()) candidates.add(it.getString(0))
+            }
+        }
+        if (linkedId > 0) {
+            readableDatabase.rawQuery("SELECT id FROM images WHERE songId=? AND trashed=0 AND id!=? ORDER BY taken DESC,id DESC LIMIT 3000",
+                arrayOf(linkedId.toString(),imageId)).use { while(it.moveToNext() && candidates.size < 800) candidates.add(it.getString(0)) }
+        }
+        if (candidates.isEmpty()) return emptyList()
+        return query("id IN (${candidates.joinToString(",") { "?" }}) AND trashed=0",
+            candidates.toTypedArray(), candidates.size.coerceAtMost(800))
+    }
+
+    fun commitSongResult(id: String, generation: Long, apply: () -> Unit): Boolean {
+        operations.lock()
+        try {
+            val row = query("id=?",arrayOf(id),1).firstOrNull() ?: return false
+            if (songGeneration != generation || (row["songManual"] as Number).toInt() != 0 ||
+                (row["trashed"] as Number).toInt() != 0) return false
+            apply()
+            return true
+        } finally { operations.unlock() }
     }
     fun count(where: String, args: Array<String>): Long =
         readableDatabase.rawQuery("SELECT COUNT(*) FROM images WHERE $where", args).use { it.moveToFirst(); it.getLong(0) }

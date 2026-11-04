@@ -64,6 +64,7 @@ app.*.map.json
 
 # Private development notes and reviewed OCR data (not public source).
 /HANDOFF.md
+/HANDOFF-HISTORY.md
 /ALPHA.md
 /ARCHITECTURE.md
 /AVES-INTEGRATION.md

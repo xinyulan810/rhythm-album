@@ -64,6 +64,7 @@ class RhythmClassifier(private val store: RhythmStore) : AutoCloseable {
             }
             if (code.isNotEmpty()) store.categories.ensureScreenCategory(code, RhythmCategories.defaultName(code, model.getJSONObject("names").optString(code, "")))
             store.update(id, "categoryCode" to code, "classified" to 1,
+                "songLayoutCode" to code,
                 "feature" to JSONArray(f.toList()).toString(),
                 "eligible" to if (code.isEmpty()) 0 else 1,
                 "game" to if (code.isEmpty()) "" else RhythmCategories.defaultName(code, model.getJSONObject("names").optString(code, "")))
@@ -91,7 +92,7 @@ class RhythmClassifier(private val store: RhythmStore) : AutoCloseable {
             val names = JSONObject(store.context.assets.open("rhythm-classifier.json").bufferedReader().use { it.readText() }).getJSONObject("names")
             val name = RhythmCategories.defaultName(code, names.optString(code, code))
             store.categories.ensureScreenCategory(code, name)
-            store.update(id, "categoryCode" to code, "game" to name, "classified" to 1, "eligible" to 1)
+            store.update(id, "categoryCode" to code, "songLayoutCode" to code, "game" to name, "classified" to 1, "eligible" to 1)
             RhythmDiagnostics.event(store, "classification_refined", "id" to id, "code" to code,
                 "evidence" to "multiscript_layout_text")
             return true

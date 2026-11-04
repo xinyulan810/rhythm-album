@@ -11,7 +11,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" android:maxSdkVersion="34" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-sdk tools:overrideLibrary="org.contentauth.c2pa" />
     <application
         android:name="android.app.Application"
         android:allowBackup="false"

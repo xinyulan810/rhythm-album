@@ -1,7 +1,4 @@
-import 'dart:isolate';
-
 import 'package:aves/app_flavor.dart';
-import 'package:aves/services/common/services.dart';
 import 'package:aves/rhythm/rhythm_app.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart';
@@ -16,17 +13,8 @@ void mainCommon(AppFlavor flavor, {Map<String, Object?>? debugIntentData}) {
   // debugPrintGestureArenaDiagnostics = true;
 
   EquatableConfig.stringify = true;
-  initPlatformServices();
-
-  Isolate.current.addErrorListener(
-    RawReceivePort((pair) {
-      final errorAndStacktrace = pair as List;
-      final error = errorAndStacktrace[0] as String;
-      final stackTraceString = errorAndStacktrace[1] as String?;
-      final stackTrace = stackTraceString != null ? StackTrace.fromString(stackTraceString) : null;
-      reportService.recordError(error, stackTrace);
-    }).sendPort,
-  );
+  // The screenshot app owns its channel and services. Do not retain the
+  // upstream gallery's media/database/video service graph in this entry point.
 
   // Errors during the widget build phase will show by default:
   // - in debug mode: error on red background

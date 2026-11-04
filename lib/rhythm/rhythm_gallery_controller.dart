@@ -34,6 +34,9 @@ class RhythmGalleryController extends ChangeNotifier {
   String album = '';
   String category = '';
   String achievement = '';
+  int songId = 0;
+  String excludeId = '';
+  String relatedTo = '';
   bool favorite = false;
   bool trash = false;
   bool ascending = false;
@@ -61,6 +64,9 @@ class RhythmGalleryController extends ChangeNotifier {
     'album': album,
     'category': category,
     'achievement': achievement,
+    'songId': songId,
+    'excludeId': excludeId,
+    'relatedTo': relatedTo,
     'favorite': favorite,
     'trash': trash,
     'ascending': ascending,
@@ -73,6 +79,18 @@ class RhythmGalleryController extends ChangeNotifier {
     _snapshot = DateTime.now().millisecondsSinceEpoch;
     more = true;
     await _load(reset: true);
+  }
+
+  Future<void> refreshSongProgress() async {
+    try {
+      final progress = await channel.invokeMapMethod<String, dynamic>('songProgress');
+      if (!_disposed && progress != null) {
+        stats['songProgress'] = progress;
+        _notify();
+      }
+    } catch (_) {
+      // A temporary channel failure must not replace the gallery's error state.
+    }
   }
 
   Future<void> loadMore({int limit = 60}) async {

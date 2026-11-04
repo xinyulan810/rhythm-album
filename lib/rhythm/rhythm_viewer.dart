@@ -10,6 +10,8 @@ import 'rhythm_gallery_controller.dart';
 import 'rhythm_photo_actions.dart';
 import 'rhythm_editor.dart';
 import 'rhythm_motion.dart';
+import 'rhythm_song.dart';
+import 'rhythm_song_layout.dart';
 
 class RhythmViewer extends StatefulWidget {
   const new({super.key, required this.gallery, required this.initialIndex, this.onPhotoChanged});
@@ -25,6 +27,7 @@ class _RhythmViewerState extends State<RhythmViewer> {
   final verticalPages = PageController(initialPage: 1);
   late int index;
   bool controls = true;
+  bool detailsVisible = false;
   bool zoomed = false;
   bool busy = false;
   bool paging = false, verticalMotion = false, routeReady = false, leaving = false;
@@ -36,7 +39,21 @@ class _RhythmViewerState extends State<RhythmViewer> {
     super.initState();
     index = widget.initialIndex;
     pages = PageController(initialPage: index);
+    verticalPages.addListener(_detailsChanged);
     gallery.addListener(_changed);
+  }
+
+  void _detailsChanged() {
+    final visible = verticalPages.hasClients && (verticalPages.page ?? 1) > 1.5;
+    if (mounted && visible != detailsVisible) setState(() => detailsVisible = visible);
+  }
+
+  Future<void> _refreshCurrent() async {
+    final item = current;
+    if (item == null) return;
+    gallery.viewerChanged = true;
+    final updated = await gallery.action('songInfo', {'id': item['id']});
+    if (mounted && updated is Map) setState(() => item.addAll(Map<String, dynamic>.from(updated)));
   }
 
   @override
@@ -98,6 +115,7 @@ class _RhythmViewerState extends State<RhythmViewer> {
     gallery.removeListener(_changed);
     routeAnimation?.removeStatusListener(_routeStatus);
     pages.dispose();
+    verticalPages.removeListener(_detailsChanged);
     verticalPages.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     super.dispose();
@@ -112,6 +130,42 @@ class _RhythmViewerState extends State<RhythmViewer> {
     if (item == null || busy) return;
     final id = item['id'] as String;
     try {
+      if (action == 'songLayout') {
+        final path = await gallery.path(item);
+        if (!mounted || path == null) return;
+        final updated = await Navigator.push<Map<String,dynamic>>(context, MaterialPageRoute(
+          builder: (_) => RhythmSongLayoutPage(row: item, imagePath: path)));
+        if (mounted && updated != null) {
+          gallery.viewerChanged = true;
+          setState(() => item.addAll(updated));
+        }
+        return;
+      }
+      if (action == 'song') {
+        final data = await editRhythmSong(context, item);
+        if (data == null) return;
+        final updated = await gallery.action('songAssign', data);
+        gallery.viewerChanged = true;
+        if (mounted && updated is Map) setState(() => item.addAll(Map<String, dynamic>.from(updated)));
+        return;
+      }
+      if (action == 'sameSong') {
+        await Navigator.push<void>(context, MaterialPageRoute(builder: (_) => RhythmSongPage(
+          songId: (item['songId'] as num? ?? 0).toInt(), relatedTo: id, title: item['song'] as String? ?? '同曲截图')));
+        // The nested viewer may have corrected a title or changed the library.
+        gallery.viewerChanged = true;
+        final updated = await gallery.action('songInfo', {'id': id});
+        if (mounted && updated is Map) setState(() => item.addAll(Map<String, dynamic>.from(updated)));
+        return;
+      }
+      if (action == 'songRetry') {
+        if (!await confirmRhythm(context, '重新识别曲名？', '将清除此图的人工曲名关联。退出查看器后开始后台识别，原图片不变。')) return;
+        await gallery.action('songRetry', {'id': id});
+        item.addAll({'songId': 0, 'songState': '', 'songManual': 0, 'song': '', 'songCandidates': '[]'});
+        gallery.viewerChanged = true;
+        if (mounted) setState(() {});
+        return;
+      }
       if (action == 'details') {
         unawaited(verticalPages.animateToPage(2, duration: const Duration(milliseconds: 250), curve: Curves.easeInOutCubic));
         return;
@@ -119,9 +173,9 @@ class _RhythmViewerState extends State<RhythmViewer> {
       if (action == 'metadata') {
         final data = await editRhythmMetadata(context, item);
         if (data == null) return;
-        await gallery.action('edit', data);
+        final updated = await gallery.action('edit', data);
         gallery.viewerChanged = true;
-        if (mounted) setState(() => item.addAll(data));
+        if (mounted) setState(() => item.addAll(updated is Map ? Map<String, dynamic>.from(updated) : data));
         return;
       }
       if (action == 'editImage') {
@@ -220,14 +274,22 @@ class _RhythmViewerState extends State<RhythmViewer> {
                   Expanded(
                     child: SingleChildScrollView(
                       padding: const EdgeInsets.all(24),
-                      child: SelectableText(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                        if (detailsVisible) RhythmSongRelated(
+                          key: ValueKey('${item['id']}-${item['songId']}-${item['song']}-${item['songRaw']}'),
+                          row: item, onReturn: _refreshCurrent, onConfirm: () => _action('song')),
+                        SelectableText(
                         '时间：${rhythmDate(item, time: true)}\n'
                         '尺寸：${item['width']} × ${item['height']}\n'
                         '游戏：${item['game'] ?? ''}\n曲名：${item['song'] ?? ''}\n'
+                        '曲名识别：${rhythmSongState(item)}\n'
+                        '原始歌名：${item['songRaw'] ?? ''}\n'
+                        '${(item['songError'] as String? ?? '').isEmpty ? '' : '识别错误：${item['songError']}\n'}'
                         '成绩标签：${rhythmAchievement(item).isEmpty ? '未判定' : rhythmAchievement(item)}\n\n'
                         '${item['ocrText'] ?? ''}',
                         style: const TextStyle(color: Colors.white, height: 1.5),
                       ),
+                      ]),
                     ),
                   ),
               ],
@@ -263,6 +325,7 @@ class _RhythmViewerState extends State<RhythmViewer> {
                           index = value;
                           zoomed = false;
                         });
+                        unawaited(_refreshCurrent().catchError((Object _) {}));
                         _warm();
                       },
                       itemBuilder: (context, position) {
@@ -306,7 +369,14 @@ class _RhythmViewerState extends State<RhythmViewer> {
                         children: [
                           BackButton(onPressed: _leave),
                           Expanded(
-                            child: Text('${index + 1} / ${gallery.total}\n${item == null ? '' : rhythmDate(item, time: true)}', maxLines: 2, style: const TextStyle(color: Colors.white)),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text((item?['song'] as String? ?? '').trim().isEmpty ? '未识别曲名' : item!['song'] as String,
+                                key: const Key('rhythm-viewer-song'), maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                              Text('${index + 1} / ${gallery.total} · ${item == null ? '' : rhythmDate(item, time: true)}',
+                                key: const Key('rhythm-viewer-position'), maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            ]),
                           ),
                           IconButton(tooltip: '详情', onPressed: () => _action('details'), icon: const Icon(Icons.info_outline)),
                           PopupMenuButton<String>(
@@ -314,6 +384,12 @@ class _RhythmViewerState extends State<RhythmViewer> {
                             itemBuilder: (_) => [
                               if (!gallery.trash) ...[
                                 const PopupMenuItem(value: 'metadata', child: Text('整理 / 改名')),
+                                const PopupMenuItem(value: 'song', child: Text('确认曲名 / 添加别名')),
+                                const PopupMenuItem(value: 'songLayout', child: Text('设置歌名位置')),
+                                if ((item?['songId'] as num? ?? 0) > 0 || (item?['song'] as String? ?? '').trim().isNotEmpty ||
+                                    (item?['songRaw'] as String? ?? '').trim().isNotEmpty)
+                                  const PopupMenuItem(value: 'sameSong', child: Text('查看同曲截图')),
+                                const PopupMenuItem(value: 'songRetry', child: Text('重新识别曲名')),
                                 const PopupMenuItem(value: 'editImage', child: Text('裁剪 / 旋转')),
                                 const PopupMenuItem(value: 'export', child: Text('保存到系统相册')),
                                 const PopupMenuItem(value: 'exportDirectory', child: Text('导出到文件夹')),

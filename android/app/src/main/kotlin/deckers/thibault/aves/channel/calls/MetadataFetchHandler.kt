@@ -29,8 +29,6 @@ import com.drew.metadata.png.PngDirectory
 import com.drew.metadata.webp.WebpDirectory
 import com.drew.metadata.xmp.XmpDirectory
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safe
-import deckers.thibault.aves.metadata.C2paHelper
-import deckers.thibault.aves.metadata.C2paValidity
 import deckers.thibault.aves.metadata.ExifInterfaceHelper
 import deckers.thibault.aves.metadata.ExifInterfaceHelper.describeAll
 import deckers.thibault.aves.metadata.ExifInterfaceHelper.getSafeDateMillis
@@ -120,7 +118,6 @@ class MetadataFetchHandler(private val context: Context) : MethodCallHandler {
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "getContentCredentials" -> ioScope.launch { safe(call, result, ::getContentCredentials) }
             "getAllMetadata" -> ioScope.launch { safe(call, result, ::getAllMetadata) }
             "getCatalogMetadata" -> ioScope.launch { safe(call, result, ::getCatalogMetadata) }
             "getOverlayMetadata" -> ioScope.launch { safe(call, result, ::getOverlayMetadata) }
@@ -134,25 +131,6 @@ class MetadataFetchHandler(private val context: Context) : MethodCallHandler {
             "getDate" -> ioScope.launch { safe(call, result, ::getDate) }
             "getFields" -> ioScope.launch { safe(call, result, ::getFields) }
             else -> result.notImplemented()
-        }
-    }
-
-    // as of `c2pa-android` v0.0.15, library is usable only from Android P (API 28)
-    private fun getContentCredentials(call: MethodCall, result: MethodChannel.Result) {
-        val contentAddress = ContentAddress.fromMethodCall(call)
-        if (contentAddress == null) {
-            result.error("getContentCredentials-args", "missing arguments", null)
-            return
-        }
-
-        try {
-            val fields: FieldMap = hashMapOf(
-                "validity" to C2paHelper.getValidity(contentAddress).toString(),
-                "json" to C2paHelper.getManifestJson(contentAddress),
-            )
-            result.success(fields)
-        } catch (ex: FileNotFoundException) {
-            result.error("getContentCredentials-filenotfound", "failed to get content credentials for $contentAddress", ex)
         }
     }
 
@@ -582,29 +560,6 @@ class MetadataFetchHandler(private val context: Context) : MethodCallHandler {
             )
             MemoryUtils.requestGarbageCollection()
         }
-
-        fun addCredentialsFlags(contentAddress: ContentAddress, existingFlags: Int): Int {
-            var flags = existingFlags
-
-            try {
-                val validity = C2paHelper.getValidity(contentAddress)
-
-                if (validity == C2paValidity.UNKNOWN) return flags
-                flags = flags or MASK_ARE_CREDENTIALS_PRESENT
-
-                if (validity == C2paValidity.INVALID) return flags
-                flags = flags or MASK_ARE_CREDENTIALS_VALID
-
-                if (validity == C2paValidity.VALID) return flags
-                flags = flags or MASK_ARE_CREDENTIALS_TRUSTED
-            } catch (ex: Exception) {
-                Log.w(LOG_TAG, "failed to get content credentials for $contentAddress", ex)
-            }
-
-            return flags
-        }
-
-        metadataMap[KEY_FLAGS] = addCredentialsFlags(contentAddress, (metadataMap[KEY_FLAGS] ?: 0) as Int)
 
         // report success even when empty
         result.success(metadataMap)
@@ -1621,9 +1576,6 @@ class MetadataFetchHandler(private val context: Context) : MethodCallHandler {
         private const val MASK_IS_MOTION_PHOTO = 1 shl 5
         private const val MASK_IS_HDR = 1 shl 6 // for images: embedded HDR gainmap, for videos: HDR color transfer
         private const val MASK_IS_SLOW_MOTION = 1 shl 7
-        private const val MASK_ARE_CREDENTIALS_PRESENT = 1 shl 8
-        private const val MASK_ARE_CREDENTIALS_VALID = 1 shl 9
-        private const val MASK_ARE_CREDENTIALS_TRUSTED = 1 shl 10
         private const val XMP_SUBJECTS_SEPARATOR = ";"
 
         // overlay metadata

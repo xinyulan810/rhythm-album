@@ -19,6 +19,7 @@ import 'rhythm_viewer.dart';
 import 'rhythm_name_dialog.dart';
 import 'rhythm_native_licenses.dart';
 import 'rhythm_motion.dart';
+import 'rhythm_song.dart';
 
 class RhythmLibraryPage extends StatefulWidget {
   const new({super.key});
@@ -29,6 +30,9 @@ class RhythmLibraryPage extends StatefulWidget {
 class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindingObserver {
   final gallery = RhythmGalleryController();
   final search = TextEditingController();
+  final searchFocus = FocusNode();
+  List<String> searchHistory = [];
+  bool historyEdited = false;
   final scroll = ScrollController();
   final albumScroll = ScrollController();
   final selected = <String>{};
@@ -60,6 +64,8 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
   @override
   void initState() {
     super.initState();
+    searchFocus.addListener(_searchFocusChanged);
+    unawaited(_loadSearchHistory());
     registerRhythmNativeLicenses();
     WidgetsBinding.instance.addObserver(this);
     RhythmGalleryController.channel.setMethodCallHandler((call) async {
@@ -106,8 +112,43 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
     });
     unawaited(gallery.refresh());
     poll = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (active && showingAlbums && !inViewer && !busy && !selecting && !gallery.loading) unawaited(gallery.refresh());
+      if (active && showingAlbums && !inViewer && !busy && !selecting && !gallery.loading) {
+        unawaited(gallery.refresh());
+      } else if (active && !inViewer && !gallery.loading) {
+        unawaited(gallery.refreshSongProgress());
+      }
     });
+  }
+
+  Future<void> _loadSearchHistory() async {
+    try {
+      final values = await gallery.action('searchHistory');
+      if (mounted && !historyEdited && values is List) setState(() => searchHistory = values.cast<String>().take(5).toList());
+    } catch (_) {}
+  }
+
+  void _searchFocusChanged() {
+    if (!mounted) return;
+    if (!searchFocus.hasFocus) _rememberSearch(search.text);
+    setState(() {});
+  }
+
+  void _rememberSearch(String text) {
+    final value = text.trim();
+    if (value.isEmpty) return;
+    historyEdited = true;
+    setState(() => searchHistory = [value, ...searchHistory.where((s) => s.toLowerCase() != value.toLowerCase())].take(5).toList());
+    unawaited(gallery.action('rememberSearch', {'query': value}).catchError((Object _) => null));
+  }
+
+  void _useSearch(String value) {
+    debounce?.cancel();
+    search.value = TextEditingValue(text: value, selection: TextSelection.collapsed(offset: value.length));
+    if (value.isNotEmpty) {
+      _rememberSearch(value);
+      setState(() => showingAlbums = false);
+    }
+    _filter(() => gallery.search = value);
   }
 
   void _changed() {
@@ -212,6 +253,8 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
     gallery.removeListener(_changed);
     gallery.dispose();
     search.dispose();
+    searchFocus.removeListener(_searchFocusChanged);
+    searchFocus.dispose();
     scroll.dispose();
     albumScroll.dispose();
     super.dispose();
@@ -267,6 +310,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
 
   Future<void> _open(int index) async {
     if (inViewer || busy) return;
+    searchFocus.unfocus();
     gallery.openWatch = Stopwatch()..start();
     gallery.openedId = gallery.items[index]['id'] as String;
     final dataBefore = gallery.dataVersion;
@@ -276,6 +320,9 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
     try {
       await gallery.action('viewerStart');
       if (!mounted) return;
+      final recognized = await gallery.action('songInfo', {'id': gallery.items[index]['id']});
+      if (!mounted) return;
+      if (recognized is Map) gallery.items[index].addAll(Map<String, dynamic>.from(recognized));
       // Fetch and decode the selected image in parallel with the Hero flight,
       // using the same provider/cache key as the viewer. Do not warm neighbours
       // until the transition finishes.
@@ -527,6 +574,12 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                 onTap: () => Navigator.pop(context, 'retryOcr'),
               ),
               if (stats['canUndoCategory'] == true) ListTile(leading: const Icon(Icons.undo), title: const Text('撤销上次相册命名 / 合并'), onTap: () => Navigator.pop(context, 'undoCategory')),
+              ListTile(
+                leading: const Icon(Icons.music_note_outlined),
+                title: const Text('曲名识别 · 试验版'),
+                subtitle: Text('待识别 ${stats['songPending'] ?? 0} 张 · 失败 ${stats['songErrors'] ?? 0} 张\n点此重跑自动识别；人工确认的曲名保留'),
+                onTap: () => Navigator.pop(context, 'songRetry'),
+              ),
               ListTile(leading: const Icon(Icons.info_outline), title: const Text('关于音游相册 · 0.4.0'), subtitle: const Text('代管截图删除原图须系统确认。回收站不自动清空；卸载前请导出。'), onTap: () => Navigator.pop(context, 'about')),
             ],
           ),
@@ -735,23 +788,46 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                 title: Text('正在处理 ${transfer!['completed']} / ${transfer!['total']} 张 · 失败 ${transfer!['failed']}'),
                 trailing: TextButton(onPressed: () => gallery.action('cancelTransfer'), child: const Text('取消')),
               ),
+            RhythmSongProgress(progress: Map<String, dynamic>.from(gallery.stats['songProgress'] as Map? ?? {})),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
               child: TextField(
                 controller: search,
+                focusNode: searchFocus,
+                textInputAction: TextInputAction.search,
                 decoration: InputDecoration(
                   hintText: '搜索图片文字、曲名、游戏、AP / FC',
                   prefixIcon: const Icon(Icons.search),
+                  suffixIcon: search.text.isEmpty ? null : IconButton(
+                    tooltip: '清空搜索', icon: const Icon(Icons.close),
+                    onPressed: () {
+                      _useSearch('');
+                      searchFocus.requestFocus();
+                    }),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
                   isDense: true,
                 ),
                 onChanged: (value) {
                   debounce?.cancel();
-                  if (value.isNotEmpty) setState(() => showingAlbums = false);
+                  setState(() { if (value.isNotEmpty) showingAlbums = false; });
                   debounce = Timer(const Duration(milliseconds: 300), () => _filter(() => gallery.search = value));
                 },
+                onSubmitted: _useSearch,
               ),
             ),
+            if (searchFocus.hasFocus && searchHistory.isNotEmpty)
+              SizedBox(height: 42, child: ListView.separated(
+                key: const Key('rhythm-search-history'),
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: searchHistory.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (_, index) => InputChip(
+                  label: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 180),
+                    child: Text(searchHistory[index], maxLines: 1, overflow: TextOverflow.ellipsis)),
+                  onPressed: () => _useSearch(searchHistory[index]),
+                ),
+              )),
             if (!showingAlbums)
               SizedBox(
                 height: 48,

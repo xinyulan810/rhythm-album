@@ -1,10 +1,13 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 bool _registered = false;
 void registerRhythmNativeLicenses() {
   if (_registered) return;
   _registered = true;
   LicenseRegistry.addLicense(() async* {
+    final catalogLicense = await const MethodChannel('io.rhythmalbum/library').invokeMethod<String>('songLicense');
+    if (catalogLicense != null) yield LicenseEntryWithLineBreaks(['Arcaea Toolbelt data (MIT)'], catalogLicense);
     yield const LicenseEntryWithLineBreaks(
       ['libjpeg-turbo'],
       '''

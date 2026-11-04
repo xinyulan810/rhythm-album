@@ -25,10 +25,11 @@ import kotlin.concurrent.withLock
 
 class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     private val store = RhythmStore.get(context)
-    private var resourceDeferred = false
+    @Volatile private var resourceDeferred = false
     private val classifierHolder = lazy { RhythmClassifier(store) }
     private val classifier get() = classifierHolder.value
     private val ocrHolder = lazy { RhythmOcr(store) }
+    private val songReaders = mutableListOf<RhythmOcr>()
     private var ocrDone = 0
     private var batchDone = 0
     private var batchTotal = 0
@@ -65,6 +66,42 @@ class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         while (!paused() && !resourceDeferred) {
             val row = store.next() ?: break
             if (RhythmCodec.viewing && row["status"] != "queued") break
+            if (row["status"] in listOf("compressed","ready") && (row["classified"] as Number).toInt() == 1 &&
+                (row["ocrVersion"] as Number).toInt() > 0 && (row["songManual"] as Number).toInt() == 0 &&
+                (row["songVersion"] as Number).toInt() < RhythmSongs.VERSION) {
+                if (shouldYield()) break
+                val jobs = RhythmPolicy.budget(applicationContext).getValue("songJobs")
+                while (songReaders.size < jobs) songReaders.add(RhythmOcr(store))
+                val batch = store.songQueue(32)
+                store.songParallel = minOf(jobs,batch.size)
+                val started = System.nanoTime()
+                val completed = java.util.concurrent.atomic.AtomicInteger()
+                try {
+                    RhythmSongBatch.run(batch, jobs, { resourceDeferred || RhythmCodec.viewing || shouldYield() }) { lane, item ->
+                        val songId = item["id"] as String
+                        val generation = store.songGeneration
+                        try { songReaders[lane].recognizeSong(songId) }
+                        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (e: Exception) {
+                            store.commitSongResult(songId,generation) {
+                                store.update(songId,"songError" to (e.message ?: "曲名识别失败").take(500),"songState" to "error")
+                            }
+                        } catch (_: OutOfMemoryError) {
+                            resourceDeferred = true
+                            store.commitSongResult(songId,generation) {
+                                store.update(songId,"songError" to "内存不足，请稍后重试","songState" to "error")
+                            }
+                        }
+                        completed.incrementAndGet()
+                        val progress = store.songProgress()
+                        notify("曲名识别 · ${store.songParallel} 路", (progress["completed"] as Number).toInt(),
+                            (progress["total"] as Number).toInt())
+                    }
+                } finally { store.songParallel = 0 }
+                RhythmDiagnostics.event(store,"song_batch","lanes" to jobs,"count" to completed.get(),
+                    "ms" to (System.nanoTime()-started)/1_000_000)
+                continue
+            }
             val id = row["id"] as String
             try {
                 store.operations.withLock {
@@ -98,6 +135,19 @@ class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                             store.update(id, "ocrError" to "内存不足，请稍后重试文字识别")
                             resourceDeferred = true
                         }
+                        return@withLock
+                    }
+                    if (row["status"] in listOf("compressed", "ready") &&
+                        (row["songVersion"] as Number).toInt() < RhythmSongs.VERSION && (row["songManual"] as Number).toInt() == 0) {
+                        if (shouldYield()) return@withLock
+                        try { ocrHolder.value.recognizeSong(id) }
+                        catch (e: Exception) { store.update(id, "songError" to (e.message ?: "曲名识别失败").take(500), "songState" to "error") }
+                        catch (_: OutOfMemoryError) {
+                            store.update(id, "songError" to "内存不足，请稍后重试曲名识别", "songState" to "error")
+                            resourceDeferred = true
+                        }
+                        val progress = store.songProgress()
+                        notify("识别曲名", (progress["completed"] as Number).toInt(), (progress["total"] as Number).toInt(), true)
                         return@withLock
                     }
                     if (row["status"] !in listOf("pending", "processing")) return@withLock
@@ -139,6 +189,8 @@ class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
         if (resourceDeferred) Result.retry() else Result.success()
         } finally {
+            store.songParallel = 0
+            songReaders.forEach { it.close() }
             if (classifierHolder.isInitialized()) classifier.close()
             if (ocrHolder.isInitialized()) ocrHolder.value.close()
         }
@@ -200,7 +252,8 @@ class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         manager.createNotificationChannel(NotificationChannelCompat.Builder(CHANNEL, NotificationManagerCompat.IMPORTANCE_LOW)
             .setName("音游相册后台处理").build())
         val percent = if (total > 0) (done * 100 / total).coerceIn(0, 100) else 0
-        val text = if (title == "识别结算图") "识别 $percent% · $done / $total 张"
+        val text = if (title.startsWith("曲名识别")) "$done / $total 张 · ${store.songParallel} 路并行"
+            else if (title == "识别结算图") "识别 $percent% · $done / $total 张"
             else if (total > 0) "本张 $percent% · 已完成 $batchDone / $batchTotal 张"
             else "已完成 $batchDone / $batchTotal 张 · 可在设置中暂停"
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL)
@@ -213,7 +266,7 @@ class RhythmWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         else if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else ForegroundInfo(NOTIFICATION, notification)
     }
-    private fun notify(title: String, done: Int, total: Int, force: Boolean = false) {
+    @Synchronized private fun notify(title: String, done: Int, total: Int, force: Boolean = false) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (!force && now - lastNotification < 250 && done != total) return
         lastNotification = now

@@ -89,7 +89,8 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
         requestScan()
         scope.launch(Dispatchers.IO) {
             if (!store.prefs.getBoolean("paused", false) && ((store.stats()["pending"] as Number).toInt() > 0 ||
-                    (store.stats()["classifying"] as Number).toInt() > 0 || (store.stats()["ocrPending"] as Number).toInt() > 0)) {
+                    (store.stats()["classifying"] as Number).toInt() > 0 || (store.stats()["ocrPending"] as Number).toInt() > 0 ||
+                    (store.stats()["songPending"] as Number).toInt() > 0)) {
                 RhythmWorker.schedule(activity)
             }
         }
@@ -254,6 +255,65 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
         }
     }
     private fun dispatch(call: MethodCall): Any? = when (call.method) {
+        "songLicense" -> activity.assets.open("rhythm-arcaea-LICENSE.txt").bufferedReader().use { it.readText() }
+        "songInfo" -> store.get(requireNotNull(call.argument<String>("id")))
+        "songProgress" -> store.songProgress()
+        "searchHistory" -> org.json.JSONArray(store.prefs.getString("searchHistory","[]")).let { a ->
+            (0 until a.length()).map { a.getString(it) }.take(5)
+        }
+        "rememberSearch" -> store.operations.withLock {
+            val value = call.argument<String>("query").orEmpty().trim().take(200)
+            val old = org.json.JSONArray(store.prefs.getString("searchHistory","[]"))
+            val history = ((if (value.isNotEmpty()) listOf(value) else emptyList()) +
+                (0 until old.length()).map { old.getString(it) }).distinctBy { RhythmSongMatcher.key(it) }.take(5)
+            check(store.prefs.edit().putString("searchHistory",org.json.JSONArray(history).toString()).commit())
+            history
+        }
+        "songLayoutScan" -> {
+            val id = requireNotNull(call.argument<String>("id"))
+            val region = call.argument<Map<String, Number>>("region")
+            val box = region?.let { RhythmSongLayouts.Box(it.getValue("x").toDouble(),it.getValue("y").toDouble(),
+                it.getValue("right").toDouble(),it.getValue("bottom").toDouble()) }
+            store.operations.withLock { RhythmOcr(store).use { it.inspectLayout(id,box) } }
+        }
+        "songLayoutSave" -> store.operations.withLock {
+            val id = requireNotNull(call.argument<String>("id"))
+            val previous = store.get(id)
+            val code = RhythmSongLayouts.code(previous)
+            val region = call.argument<Map<String, Number>>("region")
+            val box = region?.let { RhythmSongLayouts.Box(it.getValue("x").toDouble(),it.getValue("y").toDouble(),
+                it.getValue("right").toDouble(),it.getValue("bottom").toDouble()) }
+            RhythmSongLayouts.save(store,code,box)
+            val title = call.argument<String>("title").orEmpty().trim().take(300)
+            if (title.isNotEmpty()) {
+                val selected = if (RhythmSongMatcher.key(title) == RhythmSongMatcher.key(previous["song"] as String))
+                    (previous["songId"] as Number).toLong() else 0L
+                store.songs.confirm(id,selected,title,"",emptyList())
+            }
+            RhythmWorker.schedule(activity)
+            store.get(id)
+        }
+        "songSearch" -> store.songs.search(call.argument<String>("query").orEmpty().take(200))
+        "songAssign" -> store.operations.withLock {
+            val id = requireNotNull(call.argument<String>("id"))
+            store.songs.confirm(id, call.argument<Number>("songId")?.toLong() ?: 0L,
+                call.argument<String>("title").orEmpty(), call.argument<String>("artist").orEmpty(),
+                call.argument<List<String>>("aliases").orEmpty(), call.argument<Boolean>("disabled") == true)
+            store.get(id)
+        }
+        "songRetry" -> store.operations.withLock {
+            store.songGeneration++
+            val id = call.argument<String>("id")
+            if (id != null) {
+                // Explicitly asking to retry releases the manual override for this photo only.
+                store.update(id, "songVersion" to 0, "songManual" to 0, "songError" to "", "songId" to 0L,
+                    "songState" to "", "songCandidates" to "[]", "song" to "")
+            } else {
+                store.writableDatabase.execSQL("UPDATE images SET songVersion=0,songError='' WHERE songManual=0 AND trashed=0")
+            }
+            RhythmWorker.schedule(activity)
+            null
+        }
         "managedMode" -> {
             val enabled = call.argument<Boolean>("enabled") == true
             require(!enabled || RhythmManaged.supported()) { "代管删除需要 Android 11 或更新版本" }
@@ -274,11 +334,18 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             null
         }
         "list", "selectionIds" -> {
+            store.songs.ensureCatalog()
             val search = call.argument<String>("search")?.take(200).orEmpty()
             val album = call.argument<String>("album").orEmpty()
             val category = call.argument<String>("category").orEmpty()
             val where = mutableListOf("trashed=${if (call.argument<Boolean>("trash") == true) 1 else 0}")
             val args = mutableListOf<String>()
+            val relatedTo = call.argument<String>("relatedTo").orEmpty()
+            if (relatedTo.isNotEmpty()) {
+                val ids = store.songs.relatedIds(relatedTo)
+                where.add(if (ids.isEmpty()) "0" else "id IN (${ids.joinToString(",") { "?" }})")
+                args.addAll(ids)
+            }
             if (search.isNotBlank()) {
                 val terms = java.text.Normalizer.normalize(search, java.text.Normalizer.Form.NFKC).trim().split(Regex("\\s+")).take(16)
                 for (term in terms) {
@@ -287,13 +354,18 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
                         where.add("(${RhythmAchievement.EFFECTIVE_SQL}=? OR instr(' '||upper(replace(tags,',',' '))||' ',?)>0)")
                         args.add(badge); args.add(" $badge ")
                     } else {
-                        where.add("(instr(lower(name),lower(?))>0 OR instr(lower(game),lower(?))>0 OR instr(lower(song),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR categoryCode IN (SELECT c.code FROM categories c JOIN categories t ON t.code=c.target WHERE instr(lower(t.name),lower(?))>0) OR instr(ocrSearch,?)>0)")
+                        where.add("(instr(lower(name),lower(?))>0 OR instr(lower(game),lower(?))>0 OR instr(lower(song),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR categoryCode IN (SELECT c.code FROM categories c JOIN categories t ON t.code=c.target WHERE instr(lower(t.name),lower(?))>0) OR instr(ocrSearch,?)>0 OR songId IN (SELECT songId FROM song_names WHERE instr(nameKey,?)>0))")
                         repeat(5) { args.add(term) }
                         args.add(RhythmAchievement.searchKey(term))
+                        args.add(RhythmSongMatcher.key(term))
                     }
                 }
             }
             val achievement = call.argument<String>("achievement").orEmpty()
+            val songId = call.argument<Number>("songId")?.toLong() ?: 0L
+            if (songId > 0) { where.add("songId=?"); args.add(songId.toString()) }
+            val excludeId = call.argument<String>("excludeId").orEmpty()
+            if (excludeId.isNotEmpty()) { where.add("id!=?"); args.add(excludeId) }
             if (achievement in listOf("AP", "FC")) { where.add("${RhythmAchievement.EFFECTIVE_SQL}=?"); args.add(achievement) }
             if (album.isNotBlank()) { where.add("album=?"); args.add(album) }
             if (category == "other") where.add("NOT (${RhythmCategories.VISIBLE})")
@@ -408,7 +480,7 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             store.update(id, "status" to if (File(store.directory(id), "original").exists()) "pending" else "queued", "error" to "")
             RhythmWorker.schedule(activity); null
         }
-        "edit" -> {
+        "edit" -> store.operations.withLock {
             val id = requireNotNull(call.argument<String>("id"))
             val row = store.get(id)
             val game = call.argument<String>("game")?.trim().orEmpty().take(100)
@@ -425,11 +497,15 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             }
             if (game != row["game"] || eligible != ((row["eligible"] as Number).toInt() == 1))
                 store.categories.correct(listOf(id), game, !eligible)
+            val editedSong = call.argument<String>("song").orEmpty().trim().take(300)
+            if (editedSong != row["song"]) store.operations.withLock {
+                store.songs.confirm(id, 0L, editedSong, "", emptyList())
+            }
             if (eligible && row["status"] == "ready") {
                 store.update(id, "status" to "pending")
                 RhythmWorker.schedule(activity)
             }
-            null
+            store.get(id)
         }
         "view" -> {
             val id = requireNotNull(call.argument<String>("id"))

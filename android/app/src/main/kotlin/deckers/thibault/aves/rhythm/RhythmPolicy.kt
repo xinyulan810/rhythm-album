@@ -19,9 +19,13 @@ object RhythmPolicy {
         val ceiling = if (constrained) 1 else minOf(4, maxOf(1, Runtime.getRuntime().availableProcessors() / 2))
         val cacheMb = if (constrained) 24 else (manager.memoryClass / 3).coerceIn(32, 128)
         return mapOf("threads" to minOf(learnedThreads, ceiling), "threadCeiling" to ceiling,
+            "songJobs" to songJobs(Runtime.getRuntime().availableProcessors(), manager.memoryClass, memory.availMem, constrained),
             "cacheMb" to cacheMb, "prefetch" to if (constrained) 0 else if (cacheMb >= 64) 2 else 1,
             "decodeJobs" to if (constrained) 1 else 2)
     }
+    fun songJobs(cpus: Int, heapMb: Int, availableBytes: Long, constrained: Boolean): Int =
+        if (constrained) 1 else minOf(4, maxOf(1,cpus/2), maxOf(1,heapMb/256),
+            maxOf(1,(availableBytes/(384L*1024*1024)).toInt()))
     @Synchronized
     fun completed(store: RhythmStore, elapsedMs: Long, pixels: Long) {
         val perPixel = elapsedMs.toDouble() / maxOf(1, pixels)

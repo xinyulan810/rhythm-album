@@ -10,7 +10,6 @@ import com.bumptech.glide.load.resource.bitmap.TransformationUtils
 import com.drew.metadata.xmp.XmpDirectory
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safe
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safeSuspend
-import deckers.thibault.aves.metadata.C2paHelper
 import deckers.thibault.aves.metadata.Metadata
 import deckers.thibault.aves.metadata.MultiPage
 import deckers.thibault.aves.metadata.metadataextractor.MetadataExtractorHelper
@@ -48,7 +47,6 @@ class EmbeddedDataHandler(private val context: Context) : MethodCallHandler {
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "getExifThumbnails" -> ioScope.launch { safeSuspend(call, result, ::getExifThumbnails) }
-            "extractC2paResource" -> ioScope.launch { safe(call, result, ::extractC2paResource) }
             "extractGoogleDeviceItem" -> ioScope.launch { safe(call, result, ::extractGoogleDeviceItem) }
             "extractJpegMpfItem" -> ioScope.launch { safe(call, result, ::extractJpegMpfItem) }
             "extractMotionPhotoImage" -> ioScope.launch { safe(call, result, ::extractMotionPhotoImage) }
@@ -86,27 +84,6 @@ class EmbeddedDataHandler(private val context: Context) : MethodCallHandler {
             }
         }
         result.success(thumbnails)
-    }
-
-    private fun extractC2paResource(call: MethodCall, result: MethodChannel.Result) {
-        val contentAddress = ContentAddress.fromMethodCall(call)
-        val displayName = call.argument<String>("displayName")
-        val dataUri = call.argument<String>("dataUri")
-        if (contentAddress == null || dataUri == null) {
-            result.error("extractC2paResource-args", "missing arguments", null)
-            return
-        }
-
-        C2paHelper.openResource(contentAddress, dataUri)?.let { bytes ->
-            var embedMimeType: String? = null
-            bytes.inputStream().use { input ->
-                MetadataExtractorHelper.readMimeType(input, path = null, sizeBytes = bytes.size.toLong())?.let { embedMimeType = it }
-            }
-            copyEmbeddedBytes(result, embedMimeType ?: MimeTypes.ANY, displayName, bytes.inputStream(), bytes.size.toLong())
-            return
-        }
-
-        result.error("extractC2paResource-empty", "failed to extract resource from C2PA at $contentAddress dataUri=$dataUri", null)
     }
 
     private fun extractGoogleDeviceItem(call: MethodCall, result: MethodChannel.Result) {

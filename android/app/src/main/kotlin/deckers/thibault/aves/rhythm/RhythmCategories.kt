@@ -161,8 +161,11 @@ class RhythmCategories(private val store: RhythmStore) {
                 existing ?: ("local-" + UUID.randomUUID()).also { ensure(it, name.trim().take(100)) }
             }
             for (id in ids) {
-                require((store.get(id)["trashed"] as Number).toInt() != 2)
+                val row = store.get(id)
+                require((row["trashed"] as Number).toInt() != 2)
                 store.update(id, "categoryCode" to code, "classified" to 1, "manualCategory" to 1,
+                    "songLayoutCode" to (row["songLayoutCode"] as String).ifBlank {
+                        (row["categoryCode"] as String).ifBlank { code } },
                     "game" to name.trim().take(100), "eligible" to if (other) 0 else 1)
             }
             db.setTransactionSuccessful()

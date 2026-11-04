@@ -1,13 +1,17 @@
 import 'dart:async';
 
+import 'package:aves/main_libre.dart' as entry;
 import 'package:aves/rhythm/rhythm_app.dart';
 import 'package:aves/rhythm/rhythm_gallery_controller.dart';
 import 'package:aves/rhythm/rhythm_library_page.dart';
 import 'package:aves/rhythm/rhythm_viewer.dart';
 import 'package:aves/rhythm/rhythm_motion.dart';
+import 'package:aves/rhythm/rhythm_song.dart';
+import 'package:aves/rhythm/rhythm_song_layout.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:leak_tracker/leak_tracker.dart';
 import 'package:aves_magnifier/aves_magnifier.dart';
 
 RhythmPhoto photo(int index) => {
@@ -36,20 +40,37 @@ void main() {
   var rows = <RhythmPhoto>[];
   var access = 'none';
   final stats = <String, Object?>{};
+  var remembered = <String>[];
 
   setUp(() {
     calls.clear();
     rows = [];
     access = 'none';
     stats.clear();
+    remembered = [];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
       final args = call.arguments as Map? ?? {};
+      if (call.method == 'searchHistory') return remembered;
+      if (call.method == 'rememberSearch') {
+        final text = args['query'] as String;
+        remembered = [text,...remembered.where((s) => s != text)].take(5).toList();
+        return remembered;
+      }
       if (call.method == 'list') {
         final offset = args['offset'] as int? ?? 0;
+        final related = (args['relatedTo'] as String? ?? '').isEmpty ? null :
+            rows.firstWhere((row) => row['id'] == args['relatedTo']);
+        final filtered = rows.where((row) =>
+          ((args['songId'] as num? ?? 0) == 0 || row['songId'] == args['songId']) &&
+          (related == null || (row['id'] != related['id'] &&
+            (((related['songId'] as num? ?? 0) > 0 && row['songId'] == related['songId']) ||
+            row['song'] == related['song'] ||
+            ((related['song'] as String? ?? '').contains('Custom') && (row['song'] as String? ?? '').contains('Custom'))))) &&
+          row['id'] != args['excludeId']).toList();
         return {
-          'items': rows.skip(offset).take(args['limit'] as int? ?? 60).toList(),
-          'total': rows.length,
+          'items': filtered.skip(offset).take(args['limit'] as int? ?? 60).toList(),
+          'total': filtered.length,
           'stats': {
             'count': rows.length,
             'pending': 0,
@@ -61,6 +82,16 @@ void main() {
           },
         };
       }
+      if (call.method == 'songProgress') return stats['songProgress'];
+      if (call.method == 'songInfo') return rows.firstWhere((r) => r['id'] == args['id']);
+      if (call.method == 'songLayoutScan') {
+        return {
+        'code': 'phira', 'width': 1000, 'height': 500, 'region': <String,double>{},
+        'text': args['region'] == null ? '' : 'Scanned title',
+        'lines': [{'x': .3,'y': .1,'right': .7,'bottom': .2,'text': 'Scanned title','engine': 'latin'}],
+        };
+      }
+      if (call.method == 'songLayoutSave') return {...photo(0), 'song': args['title']};
       if (call.method == 'view') throw PlatformException(code: 'pending', message: '测试解码失败');
       if (call.method == 'selectionIds') return rows.map((r) => r['id']).toList();
       if (call.method == 'enableAuto') {
@@ -73,6 +104,164 @@ void main() {
   });
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+  });
+
+  testWidgets('release entry opens screenshot gallery without upstream media services', (tester) async {
+    stats['managedChoiceMade'] = true;
+    try {
+      entry.main();
+      await tester.pumpAndSettle();
+      expect(find.byType(RhythmLibraryPage), findsOneWidget);
+      expect(calls.where((call) => call.method == 'list'), isNotEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    } finally {
+      // main() enables debug leak tracking; cancel its timer before test invariants.
+      LeakTracking.stop();
+    }
+  });
+
+  testWidgets('song confirmation preserves custom OCR title unless a candidate is selected', (tester) async {
+    Map<String, dynamic>? answer;
+    final item = {...photo(0), 'song': 'Custom Light', 'songRaw': 'Custom Light', 'songState': 'candidate',
+      'songCandidates': '[{"id":12,"title":"Official Light","artist":"Composer"}]'};
+    await tester.pumpWidget(MaterialApp(home: Builder(builder: (context) =>
+      TextButton(onPressed: () async { answer = await editRhythmSong(context, item); }, child: const Text('open')))));
+    await tester.tap(find.text('open')); await tester.pumpAndSettle();
+    expect(find.text('OCR 原文：Custom Light'), findsOneWidget);
+    await tester.tap(find.text('确认')); await tester.pumpAndSettle();
+    expect(answer?['songId'], 0);
+    expect(answer?['title'], 'Custom Light');
+    await tester.tap(find.text('open')); await tester.pumpAndSettle();
+    await tester.tap(find.text('Official Light')); await tester.pumpAndSettle();
+    await tester.tap(find.text('确认')); await tester.pumpAndSettle();
+    expect(answer?['songId'], 12);
+    expect(answer?['title'], 'Official Light');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  test('same-song controller sends song identity rather than a fuzzy search', () async {
+    final controller = RhythmGalleryController()..songId = 42;
+    await controller.refresh();
+    expect((calls.lastWhere((c) => c.method == 'list').arguments as Map)['songId'], 42);
+    expect(controller.search, '');
+    controller.dispose();
+  });
+
+  testWidgets('search clear cancels pending query and recent five persist as focus chips', (tester) async {
+    remembered = ['old'];
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('rhythm-search-history')),findsNothing);
+    await tester.tap(find.byType(TextField).first);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(InputChip,'old'),findsOneWidget);
+    for (final text in ['one','two','three','four','five','six']) {
+      await tester.enterText(find.byType(TextField).first,text);
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+    }
+    expect(remembered,['six','five','four','three','two']);
+    await tester.enterText(find.byType(TextField).first,'unfinished');
+    await tester.tap(find.byTooltip('清空搜索'));
+    await tester.pumpAndSettle();
+    expect((calls.lastWhere((c) => c.method == 'list').arguments as Map)['search'],'');
+    expect(find.byTooltip('清空搜索'),findsNothing);
+    expect(find.byType(InputChip),findsNWidgets(5));
+    await tester.tap(find.widgetWithText(InputChip,'six'));
+    await tester.pumpAndSettle();
+    expect((calls.lastWhere((c) => c.method == 'list').arguments as Map)['search'],'six');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(TextField).first);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(InputChip,'six'),findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('unconfirmed OCR title can find and open related pictures', (tester) async {
+    rows = [
+      {...photo(0),'songId':0,'song':'Unknown custom','songState':'unmatched'},
+      {...photo(1),'songId':0,'song':'Unknown custom','songState':'unmatched'},
+    ];
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: RhythmSongRelated(
+      row: rows.first,onReturn: () async {},onConfirm: () {}))));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('related-photo-1')),findsOneWidget);
+    expect(find.text('曲名文字相似'),findsOneWidget);
+    expect(find.text('确认曲名后查找同曲截图'),findsNothing);
+    final query = calls.lastWhere((c) => c.method == 'list').arguments as Map;
+    expect(query['relatedTo'],'photo-0');
+    expect(query['songId'],0);
+    await tester.tap(find.byKey(const ValueKey('related-photo-1')));
+    await tester.pumpAndSettle();
+    expect(calls.lastWhere((c) => c.method == 'view').arguments,{'id':'photo-1'});
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('song progress shares import area and updates inside an album', (tester) async {
+    rows = [photo(0)];
+    stats['songProgress'] = {'total': 10,'completed': 3,'matched': 2,'failed': 1,'waiting': 0,'paused': true,'parallel': 3};
+    await tester.pumpWidget(const MaterialApp(home: RhythmLibraryPage()));
+    await tester.pumpAndSettle();
+    expect(find.text('曲名识别 · 已暂停 · 3 / 10'), findsOneWidget);
+    expect(find.textContaining('3 路并行'), findsOneWidget);
+    await tester.tap(find.text('全部截图'));
+    await tester.pumpAndSettle();
+    stats['songProgress'] = {'total': 10,'completed': 10,'matched': 8,'failed': 1,'waiting': 0};
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.text('曲名识别 · 处理完成 · 10 / 10'), findsOneWidget);
+    expect(calls.any((c) => c.method == 'songProgress'), isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('details loads only other same-song pictures and tap opens selected picture', (tester) async {
+    rows = [
+      {...photo(0),'songId': 7,'song': 'Same song'},
+      {...photo(1),'songId': 7,'song': 'Same song'},
+      {...photo(2),'songId': 8,'song': 'Different song'},
+    ];
+    final controller = RhythmGalleryController();
+    await controller.refresh();
+    await tester.pumpWidget(MaterialApp(home: RhythmViewer(gallery: controller,initialIndex: 0)));
+    await tester.pumpAndSettle();
+    expect((tester.widget<Text>(find.byKey(const Key('rhythm-viewer-song')))).data,'Same song');
+    expect(tester.getTopLeft(find.byKey(const Key('rhythm-viewer-position'))).dy,
+      greaterThan(tester.getTopLeft(find.byKey(const Key('rhythm-viewer-song'))).dy));
+    expect(calls.where((c) => c.method == 'list' && (c.arguments as Map)['songId'] == 7),isEmpty);
+    await tester.tap(find.byTooltip('详情'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('related-photo-0')),findsNothing);
+    expect(find.byKey(const ValueKey('related-photo-1')),findsOneWidget);
+    expect(find.byKey(const ValueKey('related-photo-2')),findsNothing);
+    await tester.tap(find.byKey(const ValueKey('related-photo-1')));
+    await tester.pumpAndSettle();
+    expect(calls.lastWhere((c) => c.method == 'view').arguments,{'id': 'photo-1'});
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('tapping OCR text scans relative region and saves corrected title', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: RhythmSongLayoutPage(
+      row: {...photo(0),'categoryCode':'renamed-album','songLayoutCode':'phira'},imagePath:'missing-test-image.jpg')));
+    await tester.pumpAndSettle();
+    final rect = tester.getRect(find.byKey(const Key('song-layout-canvas')));
+    await tester.tapAt(Offset(rect.left+rect.width*.5,rect.top+rect.height*.15));
+    await tester.pumpAndSettle();
+    final scan = calls.lastWhere((c) => c.method == 'songLayoutScan').arguments as Map;
+    expect(scan['region'],isNotNull);
+    expect((scan['region'] as Map)['x'],closeTo(.294,.001));
+    expect(find.textContaining('绑定原始分类：phira'),findsOneWidget);
+    await tester.enterText(find.byType(TextField),'Corrected song');
+    await tester.ensureVisible(find.text('保存位置与本图歌名'));
+    await tester.tap(find.text('保存位置与本图歌名'));
+    await tester.pumpAndSettle();
+    final saved = calls.lastWhere((c) => c.method == 'songLayoutSave').arguments as Map;
+    expect(saved['title'],'Corrected song');
+    expect(saved.containsKey('categoryCode'),isFalse);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('first launch requires explicit managed screenshot choice', (tester) async {

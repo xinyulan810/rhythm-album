@@ -135,16 +135,15 @@ class RhythmStore internal constructor(val context: Context, private val isolate
         return rows
     }
     fun get(id: String) = query("id=?", arrayOf(id), 1).firstOrNull() ?: error("Image not found")
-    // Make all newly selected images visible before spending time on compression.
     fun next(): Map<String, Any>? {
-        queueFirst("queued")?.let { return it }
-        // In managed mode complete classification, encoding and OCR for each
-        // imported image, so deletion candidates appear during the batch.
+        // In managed mode finish each imported image before importing the next,
+        // so it becomes a deletion candidate without waiting for the full scan.
         if (prefs.getBoolean("managedScreenshots", false)) {
             query("ocrVersion=0 AND ocrError='' AND classified=1 AND trashed=0 AND status IN ('compressed','ready')",
                 limit = 1).firstOrNull()?.let { return it }
             queueFirst("pending")?.let { return it }
         }
+        queueFirst("queued")?.let { return it }
         return query("classified=0 AND trashed=0 AND status IN ('pending','compressed','ready')", limit = 1).firstOrNull() ?:
         queueFirst("pending") ?:
         query("ocrVersion=0 AND ocrError='' AND trashed=0 AND status IN ('compressed','ready')", limit = 1).firstOrNull()

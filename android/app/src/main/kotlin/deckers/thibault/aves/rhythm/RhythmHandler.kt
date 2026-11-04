@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.provider.OpenableColumns
@@ -39,6 +40,7 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
     private var exportResult: MethodChannel.Result? = null
     private var managedResult: MethodChannel.Result? = null
     private var managedBatch = emptyList<Pair<String, Uri>>()
+    private var managedRequestStarted = 0L
     @Volatile private var managedCancelled = false
     private fun managedProgress(phase: String, done: Int, total: Int, failed: Int) {
         Handler(Looper.getMainLooper()).post {
@@ -93,6 +95,18 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
         }
     }
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (call.method == "managedPermissionSettings") {
+            if (Build.VERSION.SDK_INT < 31) {
+                result.error("unsupported", "自动代管需要 Android 12 或更新版本", null)
+                return
+            }
+            try {
+                activity.startActivity(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA)
+                    .setData(Uri.parse("package:${activity.packageName}")))
+                result.success(null)
+            } catch (e: Exception) { result.error("permission", e.message, null) }
+            return
+        }
         if (call.method == "cancelManaged") {
             managedCancelled = true
             result.success(null)
@@ -104,22 +118,30 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             managedResult = result
             scope.launch {
                 try {
+                    val started = SystemClock.elapsedRealtime()
                     managedBatch = withContext(Dispatchers.IO) {
-                        RhythmManaged.prepare(store, { managedCancelled }) { done, total, failed ->
-                            managedProgress("验证归档", done, total, failed)
+                        RhythmManaged.prepare(store, 1000, { managedCancelled }) { done, total, failed ->
+                            managedProgress("准备清理", done, total, failed)
                         }
                     }
+                    RhythmDiagnostics.event(store, "managed_prepare", "count" to managedBatch.size,
+                        "ms" to (SystemClock.elapsedRealtime() - started))
                     if (managedCancelled || managedBatch.isEmpty()) {
                         val cancelled = managedCancelled
                         managedBatch = emptyList()
                         managedResult = null
                         result.success(mapOf("removed" to 0, "cancelled" to cancelled))
                     } else if (Build.VERSION.SDK_INT >= 30) {
-                        managedProgress("等待系统确认", managedBatch.size, managedBatch.size, 0)
+                        val automatic = Build.VERSION.SDK_INT >= 31 &&
+                            store.prefs.getBoolean("managedAutomatic", false) && MediaStore.canManageMedia(activity)
+                        managedProgress(if (automatic) "系统批量清理" else "等待系统确认",
+                            0, managedBatch.size, 0)
                         val request = MediaStore.createDeleteRequest(activity.contentResolver, managedBatch.map { it.second })
+                        managedRequestStarted = SystemClock.elapsedRealtime()
                         activity.startIntentSenderForResult(request.intentSender, MANAGED_DELETE, null, 0, 0, 0)
                     }
                 } catch (e: Exception) {
+                    store.prefs.edit().putBoolean("managedAutomatic", false).apply()
                     managedResult = null; managedBatch = emptyList()
                     result.error("managed", e.message, null)
                 } catch (_: OutOfMemoryError) {
@@ -235,7 +257,16 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
         "managedMode" -> {
             val enabled = call.argument<Boolean>("enabled") == true
             require(!enabled || RhythmManaged.supported()) { "代管删除需要 Android 11 或更新版本" }
-            store.prefs.edit().putBoolean("managedChoiceMade", true).putBoolean("managedScreenshots", enabled).commit()
+            store.prefs.edit().putBoolean("managedChoiceMade", true).putBoolean("managedScreenshots", enabled)
+                .putBoolean("managedAutomatic", if (enabled) store.prefs.getBoolean("managedAutomatic", false) else false).commit()
+            null
+        }
+        "managedAutomatic" -> {
+            val enabled = call.argument<Boolean>("enabled") == true
+            require(!enabled || (Build.VERSION.SDK_INT >= 31 && MediaStore.canManageMedia(activity))) {
+                "请先在系统设置中授予媒体管理权限"
+            }
+            store.prefs.edit().putBoolean("managedAutomatic", enabled).commit()
             null
         }
         "retryManaged" -> {
@@ -290,6 +321,8 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
                     "encodingMode" to store.prefs.getString("encodingMode", "fast").orEmpty(),
                     "managedChoiceMade" to store.prefs.getBoolean("managedChoiceMade", false),
                     "managedScreenshots" to store.prefs.getBoolean("managedScreenshots", false),
+                    "managedAutomatic" to store.prefs.getBoolean("managedAutomatic", false),
+                    "managedPermission" to (Build.VERSION.SDK_INT >= 31 && MediaStore.canManageMedia(activity)),
                     "managedSupported" to RhythmManaged.supported(),
                     "managedPending" to RhythmManaged.count(store),
                     "managedErrors" to RhythmManaged.count(store, errors = true),
@@ -462,17 +495,25 @@ class RhythmHandler(private val activity: Activity) : MethodChannel.MethodCallHa
             val pending = managedResult
             val batch = managedBatch
             managedResult = null; managedBatch = emptyList()
+            RhythmDiagnostics.event(store, "managed_system_delete", "count" to batch.size,
+                "ms" to (SystemClock.elapsedRealtime() - managedRequestStarted), "ok" to (resultCode == Activity.RESULT_OK))
             if (resultCode != Activity.RESULT_OK) {
+                store.prefs.edit().putBoolean("managedAutomatic", false).apply()
                 pending?.success(mapOf("removed" to 0, "cancelled" to true))
             } else scope.launch {
                 try {
                     val removed = withContext(Dispatchers.IO) {
+                        val started = SystemClock.elapsedRealtime()
                         RhythmManaged.finish(store, batch) { done, total, failed ->
                             managedProgress("清理副本", done, total, failed)
-                        }
+                        }.also { RhythmDiagnostics.event(store, "managed_finish", "count" to batch.size,
+                            "removed" to it, "ms" to (SystemClock.elapsedRealtime() - started)) }
                     }
                     pending?.success(mapOf("removed" to removed, "cancelled" to false))
-                } catch (e: Exception) { pending?.error("managed", e.message, null) }
+                } catch (e: Exception) {
+                    store.prefs.edit().putBoolean("managedAutomatic", false).apply()
+                    pending?.error("managed", e.message, null)
+                }
             }
             return true
         }

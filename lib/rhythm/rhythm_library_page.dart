@@ -35,6 +35,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
   final selectedAlbums = <String>{};
   bool selecting = false;
   bool managedPromptShown = false;
+  bool managedAutoRunning = false;
   Map? transfer;
   Map? managedProgress;
   Timer? poll;
@@ -112,6 +113,17 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
   void _changed() {
     if (!mounted) return;
     if (inViewer) return;
+    if (!managedAutoRunning && active && !busy && !selecting &&
+        gallery.stats['managedScreenshots'] == true &&
+        gallery.stats['managedAutomatic'] == true &&
+        gallery.stats['managedPermission'] == true &&
+        (gallery.stats['managedPending'] as num? ?? 0) > 0) {
+      managedAutoRunning = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (mounted && active && !busy && !inViewer && !selecting) await _cleanManaged(automatic: true);
+        managedAutoRunning = false;
+      });
+    }
     if (!managedPromptShown && gallery.stats['managedChoiceMade'] == false) {
       managedPromptShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -229,6 +241,9 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
           busy = false;
           transfer = null;
           managedProgress = null;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _changed();
         });
       }
     }
@@ -417,7 +432,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
           title: const Text('是否代管截图？'),
           content: const SingleChildScrollView(child: Text(
             '关闭：保留系统原图，只在应用内收纳副本。\n\n'
-            '开启：已有部分图片完成压缩与文字识别时，即可点击“清理原图”。当前批次最多 1000 张，逐张验证后统一请求一次系统确认；取消确认会保留原图。\n\n'
+            '开启：图片压缩与文字识别完成后，可批量清理系统原图。可在设置中另行开启自动清理并授予媒体管理权限。\n\n'
             '压缩为高质量有损编码，不保留原文件的全部信息。删除后，图片由本应用保存；清空应用数据或卸载前必须先导出，否则会丢失图片。\n\n'
             '可随时在设置中关闭；关闭不会恢复已删除的原图。')),
           actions: [
@@ -431,10 +446,10 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
     if (enabled != null && mounted) await _run(() => gallery.action('managedMode', {'enabled': enabled}));
   }
 
-  Future<void> _cleanManaged() => _run(() async {
-    setState(() => managedProgress = {'phase': '准备验证', 'completed': 0, 'total': 0, 'failed': 0});
+  Future<void> _cleanManaged({bool automatic = false}) => _run(() async {
+    setState(() => managedProgress = {'phase': '准备清理', 'completed': 0, 'total': 0, 'failed': 0});
     final result = await gallery.action('deleteManagedSources') as Map?;
-    if (mounted) {
+    if (mounted && !automatic) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
       result?['cancelled'] == true ? '已取消，原图保留' : '已清理 ${result?['removed'] ?? 0} 张原图；其余保留，可在设置查看待处理数量',
       )));
@@ -461,8 +476,17 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                   onChanged: (_) => Navigator.pop(context, 'managedMode')),
               ),
               if (stats['managedScreenshots'] == true)
-                ListTile(title: const Text('清理已完成截图的系统原图'), subtitle: const Text('当前批次最多 1000 张，一次系统确认；不会删除未完成的图片'),
+                ListTile(title: const Text('清理已完成截图的系统原图'), subtitle: const Text('当前批次最多 1000 张；不会删除未完成的图片'),
                   onTap: () => Navigator.pop(context, 'cleanManaged')),
+              if (stats['managedScreenshots'] == true)
+                ListTile(
+                  title: const Text('自动清理系统原图'),
+                  subtitle: Text(stats['managedPermission'] == true
+                      ? '应用在前台时自动清理已完成的截图；清空数据或卸载前请先导出'
+                      : '需 Android 12+ 媒体管理权限；允许后再次开启'),
+                  trailing: Switch(value: stats['managedAutomatic'] == true && stats['managedPermission'] == true,
+                    onChanged: (_) => Navigator.pop(context, 'managedAutomatic')),
+                ),
               if ((stats['managedErrors'] as num? ?? 0) > 0)
                 ListTile(title: const Text('重试原图验证失败项'), onTap: () => Navigator.pop(context, 'retryManaged')),
               ListTile(
@@ -519,6 +543,18 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
         }
       case 'cleanManaged':
         await _cleanManaged();
+      case 'managedAutomatic':
+        if (stats['managedAutomatic'] == true && stats['managedPermission'] == true) {
+          await _run(() => gallery.action('managedAutomatic', {'enabled': false}));
+        } else if (stats['managedPermission'] != true) {
+          final accepted = await confirmRhythm(context, '允许自动清理原图？',
+              '授权并开启后，应用在前台会自动删除已处理截图的系统原图。压缩有损，清空数据或卸载前必须先导出。系统授权后请再次开启此开关。');
+          if (accepted) await _run(() => gallery.action('managedPermissionSettings'));
+        } else {
+          final accepted = await confirmRhythm(context, '开启自动清理原图？',
+              '已处理截图的系统原图会自动删除。压缩有损，清空数据或卸载前必须先导出。');
+          if (accepted) await _run(() => gallery.action('managedAutomatic', {'enabled': true}));
+        }
       case 'auto':
         await _enableAuto(stats['autoImport'] != true);
       case 'permission':
@@ -689,7 +725,7 @@ class _RhythmLibraryPageState extends State<RhythmLibraryPage> with WidgetsBindi
                     ? LinearProgressIndicator(value: ((managedProgress!['completed'] as num? ?? 0) /
                         (managedProgress!['total'] as num)).clamp(0.0, 1.0))
                     : null,
-                trailing: managedProgress!['phase'] == '验证归档'
+                trailing: managedProgress!['phase'] == '准备清理'
                     ? TextButton(onPressed: () => gallery.action('cancelManaged'), child: const Text('取消'))
                     : null,
               ),

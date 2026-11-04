@@ -23,6 +23,10 @@ class MediaEditHandler(private val context: Context) : MethodCallHandler {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (call.method != "cancelFileOp") {
+            result.error("rhythm-read-only", "初版不向系统图库写入文件", null)
+            return
+        }
         when (call.method) {
             "cancelFileOp" -> safe(call, result, ::cancelFileOp)
             "captureFrame" -> ioScope.launch { safeSuspend(call, result, ::captureFrame) }

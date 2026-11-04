@@ -53,3 +53,34 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local compression experiments (source screenshots remain outside this repo)
+/experiments/output/
+/experiments/**/__pycache__/
+/experiments/vendor/
+/experiments/native-build/
+/.tool-cache/
+/dist/
+
+# Private development notes and reviewed OCR data (not public source).
+/HANDOFF.md
+/ALPHA.md
+/ARCHITECTURE.md
+/AVES-INTEGRATION.md
+/GOALS.md
+/OCR-PLAN-004.md
+/PERFORMANCE*.md
+/PROJECT.md
+/experiments/labels-run001.json
+/experiments/classifier-labels.json
+/experiments/RESULTS-*.md
+/android/app/src/test/resources/rhythm-review-cases.json
+/android/app/src/test/resources/rhythm-previous-screen-cases.json
+*.jks
+*.keystore
+key.properties
+.env
+.env.*
+
+# Upstream CI, sponsorship and issue templates do not describe this fork.
+/.github/

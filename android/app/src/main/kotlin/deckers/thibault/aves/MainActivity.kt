@@ -78,6 +78,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 // `FlutterFragmentActivity` because of local auth plugin
 open class MainActivity : FlutterFragmentActivity() {
+    private var rhythmHandler: deckers.thibault.aves.rhythm.RhythmHandler? = null
     private val defaultScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var mediaStoreChangeStreamHandler: MediaStoreChangeStreamHandler
@@ -130,6 +131,9 @@ open class MainActivity : FlutterFragmentActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         val messenger = flutterEngine.dartExecutor
+        rhythmHandler = deckers.thibault.aves.rhythm.RhythmHandler(this).also {
+            MethodChannel(messenger, deckers.thibault.aves.rhythm.RhythmHandler.CHANNEL).setMethodCallHandler(it)
+        }
 
         // notification: platform -> dart
         analysisStreamHandler = AnalysisStreamHandler().apply {
@@ -229,6 +233,7 @@ open class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        rhythmHandler?.close()
         Log.i(LOG_TAG, "onDestroy")
         mediaSessionHandler.dispose()
         mediaStoreChangeStreamHandler.dispose()
@@ -319,6 +324,7 @@ open class MainActivity : FlutterFragmentActivity() {
         Log.i(LOG_TAG, "onActivityResult requestCode=$requestCode resultCode=$resultCode data=$data")
         logExtras(data, "onActivityResult")
         super.onActivityResult(requestCode, resultCode, data)
+        if (rhythmHandler?.onActivityResult(requestCode, resultCode, data) == true) return
         when (requestCode) {
             DOCUMENT_TREE_ACCESS_REQUEST -> onDocumentTreeAccessResult(requestCode, resultCode, data)
             SCOPED_STORAGE_PERMISSION_REQUEST -> onScopedStoragePermissionResult(resultCode)
@@ -329,6 +335,11 @@ open class MainActivity : FlutterFragmentActivity() {
             PICK_COLLECTION_FILTERS_REQUEST -> onCollectionFiltersPickResult(resultCode, data)
             EDIT_REQUEST -> onEditResult(resultCode, data)
         }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        rhythmHandler?.onRequestPermissionsResult(requestCode)
     }
 
     private fun onCollectionFiltersPickResult(resultCode: Int, intent: Intent?) {

@@ -28,15 +28,7 @@ class MetadataEditHandler(private val context: Context) : MethodCallHandler {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "rotate" -> ioScope.launch { safe(call, result, ::rotate) }
-            "flip" -> ioScope.launch { safe(call, result, ::flip) }
-            "editExifDate" -> ioScope.launch { safe(call, result, ::editExifDate) }
-            "editMetadata" -> ioScope.launch { safe(call, result, ::editMetadata) }
-            "removeTrailerVideo" -> ioScope.launch { safe(call, result, ::removeTrailerVideo) }
-            "removeTypes" -> ioScope.launch { safe(call, result, ::removeTypes) }
-            else -> result.notImplemented()
-        }
+        result.error("rhythm-read-only", "初版不改写系统原图；请在音游库中编辑收藏夹和标签", null)
     }
 
     private fun rotate(call: MethodCall, result: MethodChannel.Result) {

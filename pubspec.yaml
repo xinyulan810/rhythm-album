@@ -1,6 +1,6 @@
 name: aves
-description: A visual media gallery and metadata explorer app.
-repository: https://github.com/deckerst/aves
+description: 基于 Aves 的 Android 音游截图相册，支持离线识别、分类和压缩。
+repository: https://github.com/xinyulan810/rhythm-album
 publish_to: none
 
 # version bump checklist:
@@ -8,7 +8,7 @@ publish_to: none
 # - edit GitHub changelog:     /CHANGELOG.md
 # - edit Play Store changelog: /whatsnew/whatsnew-en-US
 # - run `scripts/apply_version_bump.sh`
-version: 1.15.8+182
+version: 0.4.0+13
 
 environment:
   # this project bundles Flutter SDK via `flutter_wrapper`
@@ -24,10 +24,10 @@ workspace:
   - plugins/aves_map
   - plugins/aves_model
   - plugins/aves_report
-  - plugins/aves_report_crashlytics
+  - plugins/aves_report_console
   - plugins/aves_screen_state
   - plugins/aves_services
-  - plugins/aves_services_google
+  - plugins/aves_services_none
   - plugins/aves_ui
   - plugins/aves_utils
   - plugins/aves_video
@@ -49,13 +49,13 @@ dependencies:
   aves_report:
     path: plugins/aves_report
   aves_report_platform:
-    path: plugins/aves_report_crashlytics
+    path: plugins/aves_report_console
   aves_screen_state:
     path: plugins/aves_screen_state
   aves_services:
     path: plugins/aves_services
   aves_services_platform:
-    path: plugins/aves_services_google
+    path: plugins/aves_services_none
   aves_video:
     path: plugins/aves_video
   #  aves_video_exo:
@@ -180,6 +180,9 @@ dev_dependencies:
 flutter:
   assets:
     - assets/
+    - LICENSE
+    - experiments/vendor/aom/LICENSE
+    - experiments/vendor/aom/PATENTS
     - assets/flags/
     - assets/map_samples/
   generate: true

@@ -1,169 +1,73 @@
-<div align="center">
+# 音游截图相册 · Rhythm Album
 
-<img src="https://raw.githubusercontent.com/deckerst/aves/develop/aves_logo.svg" alt='Aves logo' width="200" />
+基于 **Aves** 改造的 Android 音游截图相册，使用 Flutter 与 Kotlin 开发。本项目是独立实验性衍生项目，不是 Aves 官方版本。
 
-## Aves
+## 功能
 
-[ˈaː.ves]
+- 自动收纳文件名含 `screenshot` 的截图，也支持手动导入。
+- 按游戏分类，按相册内最新截图倒序排列；四宫格封面、实时筛选的相册命名下拉框。
+- 中英日离线 OCR、文字搜索、AP（含 Pure Memory）与 FC 标签识别。
+- 全屏滑动浏览、缩放、下滑返回，多选、合并、收藏、分享、批量导出和回收站。
+- 全分辨率高质量有损编码：速度优先使用 4:4:4 JPEG，体积优先使用实验性 AV1 方案。
+- 可选“代管截图”：首次启动选择，设置中可关闭。校验源文件与压缩归档后，通过 Android 系统确认删除原图。
+- BanG Dream! 抽卡图使用独立内部类别，显示在同一个 BanG Dream! 相册。
 
-![Version badge][Version badge]
-![RB badge][RB badge]
-![Build badge][Build badge]
+## 当前状态与重要提醒
 
-Aves is a gallery and metadata explorer app. It is built for Android, with Flutter.
+当前源码版本为 **0.4.0+13，实验性版本**。不要把本应用作为重要图片的唯一存储位置。
 
-[<img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
-      alt='Get it on Google Play'
-      height="80">](https://play.google.com/store/apps/details?id=deckers.thibault.aves&pcampaignid=pcampaignidMKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1)
-[<img src="https://gitlab.com/IzzyOnDroid/repo/-/raw/master/assets/IzzyOnDroid.png"
-      alt='Get it on IzzyOnDroid'
-      height="80">](https://apt.izzysoft.de/fdroid/index/apk/deckers.thibault.aves)
-[<img src="https://raw.githubusercontent.com/deckerst/common/main/assets/obtainium-badge-english.png"
-      alt='Get it on Obtainium'
-      height="80">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/deckerst/aves)
-[<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png"
-      alt='Get it on F-Droid'
-      height="80">](https://f-droid.org/packages/deckers.thibault.aves.libre)
-[<img src="https://raw.githubusercontent.com/deckerst/common/main/assets/get-it-on-github.png"
-      alt='Get it on GitHub'
-      height="80">](https://github.com/deckerst/aves/releases/latest)
+**压缩不是无损存档。代管删除原图后，清空应用数据或卸载会丢失尚未导出的图片。请先备份，再测试。**
 
+当前已知限制：
 
-[Compare versions](https://github.com/deckerst/aves/wiki/App-Versions)
-      
-<div align="left">
+1. 首次大量导入按导入、分类、压缩、OCR 的优先顺序处理。已分类但未压缩的图片暂时也会显示在“其他”，这是已知显示逻辑问题，不代表全部识别失败。
+2. 开启代管不会自动删除原图：部分图片处理完成后即可点击“清理原图”，逐张验证并显示进度，当前批次最多 1000 张统一确认一次系统弹窗。要求 Android 11+、全部照片权限、压缩成功及 OCR 完成。
+3. 当前代管仅处理 MediaStore 中符合 screenshot 命名的图片。手动文档选择器来源、压缩无收益的原样收纳图片不参与清理。
+4. 分类与成绩标签可能误判；开发集回放结果不能代表所有游戏和截图的识别率。部分新分类规则尚未完成发行包真机回归。
+5. 主要在单台 ARM64 Android 设备上测试；不承诺跨设备稳定 60fps。系统删除/取消和删除后浏览、导出流程仍在实测中。
 
-## Features
+源码公开不代表这些问题已经修复。反馈时请说明版本、系统版本、复现步骤，避免上传含私人信息的截图或日志。
 
-Aves can handle all sorts of images and videos, including your typical JPEGs and MP4s, but also more exotic things like **multi-page TIFFs, SVGs, old AVIs and more**!
+## 构建
 
-It scans your media collection to identify **motion photos**, **panoramas** (aka photo spheres), **360° videos**, as well as **GeoTIFF** files.
+建议使用 Windows PowerShell。需要 Git、Python、JDK 21、Android SDK/NDK/CMake，以及相应原生构建工具。Flutter 版本由 `.flutter` 子模块锁定。
 
-**Navigation and search** is an important part of Aves. The goal is for users to easily flow from albums to photos to tags to maps, etc.
+```powershell
+git clone --recurse-submodules https://github.com/xinyulan810/rhythm-album.git
+cd rhythm-album
 
-Aves integrates with Android (including Android TV) with features such as **widgets**, **app shortcuts**, **screen saver** and **global search** handling. It also works as a **media viewer and picker**.
+# 改成你的 Android SDK 路径
+$env:ANDROID_HOME = 'D:\Android\Sdk'
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
 
-## Screenshots
-
-<div align="center">
-
-[<img src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/1.png"
-      alt='Collection screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/1.png)
-[<img
-      src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/2.png"
-      alt='Image screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/2.png)
-[<img
-      src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/5.png"
-      alt='Stats screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/5.png)
-[<img
-      src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/3.png"
-      alt='Info (basic) screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/3.png)
-[<img
-      src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/4.png"
-      alt='Info (metadata) screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/4.png)
-[<img
-      src="https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/readme/en/6.png"
-      alt='Countries screenshot'
-      width="130" />](https://raw.githubusercontent.com/deckerst/aves_extra/main/screenshots/play/en/6.png)
-
-<div align="left">
-
-## Changelog
-
-The list of changes for past and future releases is available [here](https://github.com/deckerst/aves/blob/develop/CHANGELOG.md).
-
-## Permissions
-
-| Permission                                                                                                                                             | Purpose                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| READ_MEDIA_IMAGES<br>READ_MEDIA_VIDEO<br>READ_MEDIA_VISUAL_USER_SELECTED<br>ACCESS_MEDIA_LOCATION                                                      | Media collection read access  |
-| MANAGE_MEDIA                                                                                                                                           | Media collection write access |
-| FOREGROUND_SERVICE<br>FOREGROUND_SERVICE_MEDIA_PROCESSING<br>POST_NOTIFICATIONS<br>ACCESS_NETWORK_STATE<br>ACCESS_WIFI_STATE<br>RECEIVE_BOOT_COMPLETED | Media scan service feedback   |
-| INTERNET                                                                                                                                               | Map view, reverse geocoding   |
-| SET_WALLPAPER                                                                                                                                          | Wallpaper setting             |
-| USE_BIOMETRIC<br>USE_FINGERPRINT                                                                                                                       | Vault lock                    |
-| WAKE_LOCK                                                                                                                                              | Keeping screen on             |
-
-## Contributing
-
-### Issues
-
-[Bug reports](https://github.com/deckerst/aves/issues/new?assignees=&labels=type%3Abug&template=bug_report.yml&title=) and [feature requests](https://github.com/deckerst/aves/issues/new?assignees=&labels=type%3Afeature&template=feature_request.yml&title=) are welcome, but read the [guidelines](https://github.com/deckerst/aves/issues/234) first. If you have questions, check out the [discussions](https://github.com/deckerst/aves/discussions).
-
-### Code
-
-At this stage this project does *not* accept PRs.
-
-### Translations
-
-Translations are powered by [Weblate](https://hosted.weblate.org/engage/aves/) and the effort of wonderfully generous volunteers.
-<a href="https://hosted.weblate.org/engage/aves/">
-<img src="https://hosted.weblate.org/widgets/aves/-/multi-auto.svg" alt="Translation status" />
-</a>
-
-If you want to translate this app in your language and share the result, [there is a guide](https://github.com/deckerst/aves/wiki/Contributing-to-Translations).
-
-### Donations
-
-Some users have expressed the wish to financially support the project. Thanks! ❤️
-
-[<img src="https://raw.githubusercontent.com/deckerst/common/main/assets/paypal-badge-cropped.png"
-      alt='Donate with PayPal'
-      height="40">](https://www.paypal.com/donate/?hosted_button_id=RWKQ4J7D8USX6)
-[<img src="https://liberapay.com/assets/widgets/donate.svg"
-      alt='Donate using Liberapay'
-      height="40">](https://liberapay.com/deckerst/donate)
-
-## Project Setup
-
-Before running or building the app, update the dependencies for the desired flavor:
-```
-# scripts/apply_flavor_play.sh
+# 下载固定提交的 libaom、libjpeg-turbo、dav1d 与 Meson
+.\scripts\bootstrap-native.ps1
+.\scripts\flutter-local.ps1 pub get
+.\scripts\flutter-local.ps1 build apk --release --flavor libre --target lib/main_libre.dart --target-platform android-arm64
 ```
 
-To build the project, create a file named `<app dir>/android/key.properties`. It should contain a reference to a keystore for app signing, and other necessary credentials. See [key_template.properties](https://github.com/deckerst/aves/blob/develop/android/key_template.properties) for the expected keys.
+产物位于 `build/app/outputs/flutter-apk/app-libre-release.apk`。当前默认使用本机调试签名；自行发行请配置自己的安全签名流程，勿提交密钥。本项目尚未对全新构建环境做可复现构建验收。
 
-To run the app:
-```
-# ./flutterw run -t lib/main_play.dart --flavor play
-```
+Flutter 定向测试：
 
-To debug the app Kotlin code, if attaching the debugger from Android Studio fails:
-1) open `android` folder in Android Studio,
-2) `Edit Configurations...`,
-3) select configuration `app`,
-4) select tab `Debugger`
-5) select tab `LLDB Post Attach Commands`
-6) add:
-```
-process handle SIGSEGV --pass true --stop false --notify true
+```powershell
+.\scripts\flutter-local.ps1 test test/rhythm_library_test.dart
+.\scripts\flutter-local.ps1 analyze lib/rhythm test/rhythm_library_test.dart
 ```
 
-## Certificate Fingerprint
+私人截图、人工标注、OCR 原始语料、设备日志、密钥、缓存和本地交接记录不随源码发布。涉及私人数据的实验回放需要自行准备数据；公开仓库仅提供合成文本回归样例。
 
-```
-Owner: CN=Thibault Deckers
-Issuer: CN=Thibault Deckers
-Serial number: 12957861
-Valid from: Wed Dec 07 08:07:30 CET 2016 until: Sun Dec 01 08:07:30 CET 2041
-Certificate fingerprints:
-         SHA1: 59:A5:00:13:FA:7A:2F:97:91:1B:52:D6:81:CA:FA:EB:F8:35:05:E8
-         SHA256: F4:79:47:27:E4:54:16:D8:7C:48:71:38:29:2B:70:9F:11:D1:CD:7D:AB:55:84:D8:C6:85:7D:92:E0:66:60:4B
-```
-SHA1: 
-```text
-59:A5:00:13:FA:7A:2F:97:91:1B:52:D6:81:CA:FA:EB:F8:35:05:E8
-```
-SHA256:
-```text
-F4:79:47:27:E4:54:16:D8:7C:48:71:38:29:2B:70:9F:11:D1:CD:7D:AB:55:84:D8:C6:85:7D:92:E0:66:60:4B
-```
+## 致谢与来源
 
-[Version badge]: https://img.shields.io/github/v/release/deckerst/aves?include_prereleases&sort=semver
-[RB badge]: https://shields.rbtlog.dev/simple/deckers.thibault.aves
-[Build badge]: https://img.shields.io/github/actions/workflow/status/deckerst/aves/quality-check.yml?branch=develop
+特别感谢 **Thibault Deckers（deckerst）及 Aves 全体贡献者**：
+
+- 原项目：[Aves](https://github.com/deckerst/aves)
+- 本项目沿用 Aves 的 Android/Flutter 工程、部分图片查看与手势组件，并参考相册界面、动画与交互实现。
+- 保留原项目提交历史、版权声明与 BSD 3-Clause 许可证。仓库里仍有未使用的上游功能源码，并不表示本应用提供全部 Aves 功能。
+- Aves 作者及贡献者与本衍生项目的实验功能、分类效果和数据管理风险无关。
+
+同时感谢 Flutter、AndroidX、libaom、libjpeg-turbo、dav1d 及其他依赖项目。中英日识别使用 Google ML Kit 随包模型，相关组件适用各自的条款；本仓库公开不代表所有二进制依赖都采用 BSD 许可证。
+
+## 许可证
+
+项目沿用 **BSD 3-Clause License**，见 [LICENSE](LICENSE)。第三方组件保留各自许可证及专利声明；编解码许可证文本也包含在应用内的开源许可页中。

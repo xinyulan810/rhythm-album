@@ -2,7 +2,7 @@ import 'dart:isolate';
 
 import 'package:aves/app_flavor.dart';
 import 'package:aves/services/common/services.dart';
-import 'package:aves/widgets/aves_app.dart';
+import 'package:aves/rhythm/rhythm_app.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -35,9 +35,21 @@ void mainCommon(AppFlavor flavor, {Map<String, Object?>? debugIntentData}) {
   // ErrorWidget.builder = (details) => ErrorWidget(details.exception);
   // cf https://docs.flutter.dev/testing/errors
 
-  LeakTracking.start();
-  FlutterMemoryAllocations.instance.addListener(
-    (event) => LeakTracking.dispatchObjectEvent(event.toMap()),
-  );
-  runApp(AvesApp(flavor: flavor, debugIntentData: debugIntentData));
+  WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(['Aves'], await rootBundle.loadString('LICENSE'));
+    for (final path in ['LICENSE', 'PATENTS']) {
+      yield LicenseEntryWithLineBreaks(['libaom'], await rootBundle.loadString('experiments/vendor/aom/$path'));
+    }
+  });
+  PaintingBinding.instance.imageCache
+    ..maximumSizeBytes = 48 * 1024 * 1024
+    ..maximumSize = 160;
+  if (kDebugMode) {
+    LeakTracking.start();
+    FlutterMemoryAllocations.instance.addListener(
+      (event) => LeakTracking.dispatchObjectEvent(event.toMap()),
+    );
+  }
+  runApp(const RhythmApp());
 }

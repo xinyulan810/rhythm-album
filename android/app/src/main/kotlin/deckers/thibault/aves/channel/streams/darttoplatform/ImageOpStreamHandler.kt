@@ -37,6 +37,11 @@ class ImageOpStreamHandler(private val context: Context, private val arguments: 
     override val logTag = LOG_TAG
 
     override fun onCall(args: Any?) {
+        if (op in setOf("delete", "move", "rename", "convert")) {
+            error("rhythm-read-only", "初版不允许删除、移动、重命名或转换系统原图", null)
+            endOfStream()
+            return
+        }
         when (op) {
             "delete" -> ioScope.launch { safe(::delete) }
             "convert" -> ioScope.launch { safeSuspend(::convert) }

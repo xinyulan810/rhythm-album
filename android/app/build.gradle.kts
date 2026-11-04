@@ -46,27 +46,54 @@ android {
         // e.g. `java/util/function/Supplier` on Android 5.0 (API 21)
         isCoreLibraryDesugaringEnabled = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            val testHome = rootProject.file("../.tool-cache/test-home")
+            val testTemp = rootProject.file("../.tool-cache/test-temp")
+            it.systemProperty("user.home", testHome.absolutePath)
+            it.systemProperty("java.io.tmpdir", testTemp.absolutePath)
+            it.environment("TEMP", testTemp.absolutePath)
+            it.environment("TMP", testTemp.absolutePath)
+            it.doFirst { testHome.mkdirs(); testTemp.mkdirs() }
+        }
+    }
 
+    if (providers.gradleProperty("rhythmTestsOnly").orNull == "true") {
+        // Upstream Aves tests reference removed APIs; keep the gallery suite independently runnable.
+        sourceSets.getByName("test").java.setSrcDirs(emptyList<String>())
+        sourceSets.getByName("test").kotlin.setSrcDirs(listOf("src/test/kotlin/deckers/thibault/aves/rhythm"))
+    }
     kotlin {
         // Gradle looks up toolchain JDKs (for this app and each of its modules)
         // among locally installed JDKs (including in `~/.gradle/jdks/` and `~/jdks`)
         // and download them from configured repositories if necessary.
         jvmToolchain {
             languageVersion.set(JavaLanguageVersion.of(21))
-            vendor.set(JvmVendorSpec.ADOPTIUM) // Temurin
+            // Use the installed Java 21 toolchain; no vendor-specific download.
             // for consistency, refresh `gradle-daemon-jvm.properties` with the following:
             // ./gradlew updateDaemonJvm --jvm-version=21 --jvm-vendor=ADOPTIUM
         }
     }
 
     defaultConfig {
-        applicationId = packageName
+        applicationId = "io.rhythmalbum.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         manifestPlaceholders["googleApiKey"] = keystoreProperties["googleApiKey"] ?: "NONE"
         multiDexEnabled = true
+        externalNativeBuild {
+            cmake { arguments += listOf("-DANDROID_STL=c++_shared") }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // remove dependency metadata from build artifacts
@@ -131,7 +158,8 @@ android {
             if (signingConfigs.names.contains("release")) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
-                println("Skip release signing as it is not configured")
+                // Local alpha only. Production requires a private release key.
+                signingConfig = signingConfigs.getByName("debug")
             }
             isMinifyEnabled = true
             isShrinkResources = true
@@ -194,6 +222,13 @@ flutter {
     source = "../.."
 }
 
+// AGP's resource-backed JVM test package also consumes Flutter's copied assets.
+tasks.configureEach {
+    if (name == "packageLibreDebugUnitTestForUnitTest") {
+        dependsOn("copyFlutterAssetsLibreDebug")
+    }
+}
+
 repositories {
     maven {
         url = uri("https://jitpack.io")
@@ -212,6 +247,9 @@ repositories {
 }
 
 dependencies {
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
     // cf https://developer.android.com/studio/write/java8-support#library-desugaring
     coreLibraryDesugaring(libs.android.desugarJdkLibs)
 
@@ -249,6 +287,8 @@ dependencies {
     implementation(project(":exifinterface"))
 
     testImplementation(libs.junit)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 
     ksp(libs.glideKsp)
 

@@ -1,4 +1,5 @@
 import 'package:aves/model/filters/container/album_group.dart';
+import 'package:aves/rhythm/rhythm_library_page.dart';
 import 'package:aves/model/filters/covered/stored_album.dart';
 import 'package:aves/model/filters/trash.dart';
 import 'package:aves/model/settings/settings.dart';
@@ -53,9 +54,20 @@ class const AppDrawer({
     final source = context.read<CollectionSource>();
     final specialAlbums = source.rawAlbums.where((album) {
       final type = androidFileUtils.getAlbumType(album);
-      return [AlbumType.camera, AlbumType.download, AlbumType.screenshots].contains(type);
+      return [
+        AlbumType.camera,
+        AlbumType.download,
+        AlbumType.screenshots,
+      ].contains(type);
     }).toList()..sort(source.compareAlbumsByName);
-    return specialAlbums.map((v) => StoredAlbumFilter(v, source.getStoredAlbumDisplayName(context, v))).toList();
+    return specialAlbums
+        .map(
+          (v) => StoredAlbumFilter(
+            v,
+            source.getStoredAlbumDisplayName(context, v),
+          ),
+        )
+        .toList();
   }
 
   static List<AlbumBaseFilter>? _getCustomAlbums(BuildContext context) {
@@ -63,7 +75,10 @@ class const AppDrawer({
     return settings.drawerAlbumBookmarks?.map((v) {
       if (v is StoredAlbumFilter) {
         final album = v.album;
-        return StoredAlbumFilter(album, source.getStoredAlbumDisplayName(context, album));
+        return StoredAlbumFilter(
+          album,
+          source.getStoredAlbumDisplayName(context, album),
+        );
       }
       return v;
     }).toList();
@@ -118,18 +133,24 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final drawerItems = <Widget>[
       _buildHeader(context),
+      ListTile(
+        leading: const Icon(Icons.library_music_outlined),
+        title: const Text('音游库 · Alpha'),
+        subtitle: const Text('收纳截图 / 实验压缩 / 收藏夹'),
+        onTap: () {
+          final navigator = Navigator.of(context);
+          navigator.pop();
+          navigator.push(
+            MaterialPageRoute<void>(builder: (_) => const RhythmLibraryPage()),
+          );
+        },
+      ),
       _buildHomeLink(),
       ..._buildTypeLinks(),
       _buildAlbumLinks(context),
       ..._buildPageLinks(context),
-      if (settings.enableBin) ...[
-        const Divider(),
-        binTile(context),
-      ],
-      if (!kReleaseMode) ...[
-        const Divider(),
-        debugTile,
-      ],
+      if (settings.enableBin) ...[const Divider(), binTile(context)],
+      if (!kReleaseMode) ...[const Divider(), debugTile],
     ];
 
     return Drawer(
@@ -151,9 +172,7 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
                 data: iconTheme.copyWith(
                   size: textScaler.scale(iconTheme.size!),
                 ),
-                child: Column(
-                  children: drawerItems,
-                ),
+                child: Column(children: drawerItems),
               ),
             );
           },
@@ -181,7 +200,9 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
     final onPrimary = colorScheme.onPrimary;
 
     final drawerButtonStyle = ButtonStyle(
-      padding: WidgetStateProperty.all(const EdgeInsetsDirectional.only(start: 12, end: 16)),
+      padding: WidgetStateProperty.all(
+        const EdgeInsetsDirectional.only(start: 12, end: 16),
+      ),
     );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -192,9 +213,13 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
           data: OutlinedButtonThemeData(
             style: ButtonStyle(
               foregroundColor: WidgetStateProperty.all<Color>(onPrimary),
-              overlayColor: WidgetStateProperty.all<Color>(onPrimary.withValues(alpha: .12)),
+              overlayColor: WidgetStateProperty.all<Color>(
+                onPrimary.withValues(alpha: .12),
+              ),
               iconColor: WidgetStateProperty.all<Color>(onPrimary),
-              side: WidgetStateProperty.all<BorderSide>(BorderSide(width: 1, color: onPrimary.withValues(alpha: .24))),
+              side: WidgetStateProperty.all<BorderSide>(
+                BorderSide(width: 1, color: onPrimary.withValues(alpha: .24)),
+              ),
             ),
           ),
           child: Column(
@@ -212,11 +237,12 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
                       textSpans: [
                         TextSpan(
                           text: appName,
-                          style: AStyles.appNameStyle(context, appName).copyWith(
-                            color: Colors.white,
-                            fontSize: 38,
-                            fontWeight: .w300,
-                          ),
+                          style: AStyles.appNameStyle(context, appName)
+                              .copyWith(
+                                color: Colors.white,
+                                fontSize: 38,
+                                fontWeight: .w300,
+                              ),
                         ),
                       ],
                     ),
@@ -230,7 +256,8 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
                   OutlinedButton.icon(
                     // key is expected by test driver
                     key: const Key('drawer-about-button'),
-                    onPressed: () => goTo(AboutPage.routeName, (_) => const AboutPage()),
+                    onPressed: () =>
+                        goTo(AboutPage.routeName, (_) => const AboutPage()),
                     style: drawerButtonStyle,
                     icon: const Icon(AIcons.info),
                     label: Text(l10n.drawerAboutButton),
@@ -238,7 +265,10 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
                   OutlinedButton.icon(
                     // key is expected by test driver
                     key: const Key('drawer-settings-button'),
-                    onPressed: () => goTo(SettingsPage.routeName, (_) => const SettingsPage()),
+                    onPressed: () => goTo(
+                      SettingsPage.routeName,
+                      (_) => const SettingsPage(),
+                    ),
                     style: drawerButtonStyle,
                     icon: const Icon(AIcons.settings),
                     label: Text(l10n.drawerSettingsButton),
@@ -254,14 +284,19 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
                   final canRequestInteractAcrossProfiles = flags[0] as bool;
                   final canSwitchProfile = flags[1] as bool;
                   final profileSwitchingLabel = flags[2] as String;
-                  if ((!canRequestInteractAcrossProfiles && !canSwitchProfile) || profileSwitchingLabel.isEmpty) return const SizedBox();
+                  if ((!canRequestInteractAcrossProfiles &&
+                          !canSwitchProfile) ||
+                      profileSwitchingLabel.isEmpty)
+                    return const SizedBox();
 
                   return OutlinedButton(
                     onPressed: () async {
                       if (canSwitchProfile) {
                         await appProfileService.switchProfile();
                       } else {
-                        _profileSwitchPermissionRequested = await appProfileService.requestInteractAcrossProfiles();
+                        _profileSwitchPermissionRequested =
+                            await appProfileService
+                                .requestInteractAcrossProfiles();
                       }
                     },
                     child: Text(profileSwitchingLabel),
@@ -321,16 +356,14 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
             title: DrawerFilterTitle(filter: filter),
             filters: {filter},
             isSelected: () {
-              if (currentFilters == null || currentFilters.length > 1) return false;
+              if (currentFilters == null || currentFilters.length > 1)
+                return false;
               return currentFilters.firstOrNull == filter;
             },
           ),
         )
         .toList();
-    return [
-      if (tiles.isNotEmpty) const SizedBox(height: 8),
-      ...tiles,
-    ];
+    return [if (tiles.isNotEmpty) const SizedBox(height: 8), ...tiles];
   }
 
   Widget _buildAlbumLinks(BuildContext context) {
@@ -348,7 +381,8 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
               (filter) => AlbumNavTile(
                 filter: filter,
                 isSelected: () {
-                  if (currentFilters == null || currentFilters.length != 1) return false;
+                  if (currentFilters == null || currentFilters.length != 1)
+                    return false;
                   return currentFilters.firstOrNull == filter;
                 },
               ),
@@ -373,22 +407,27 @@ class _AppDrawerState extends State<AppDrawer> with WidgetsBindingObserver {
           case AlbumListPage.routeName:
             trailing = StreamBuilder<AlbumsChangedEvent>(
               stream: source.eventBus.on<AlbumsChangedEvent>(),
-              builder: (context, _) => Text(itemCountFormatter.format(source.rawAlbums.length)),
+              builder: (context, _) =>
+                  Text(itemCountFormatter.format(source.rawAlbums.length)),
             );
           case CountryListPage.routeName:
             trailing = StreamBuilder<CountriesChangedEvent>(
               stream: source.eventBus.on<CountriesChangedEvent>(),
-              builder: (context, _) => Text(itemCountFormatter.format(source.sortedCountries.length)),
+              builder: (context, _) => Text(
+                itemCountFormatter.format(source.sortedCountries.length),
+              ),
             );
           case PlaceListPage.routeName:
             trailing = StreamBuilder<PlacesChangedEvent>(
               stream: source.eventBus.on<PlacesChangedEvent>(),
-              builder: (context, _) => Text(itemCountFormatter.format(source.sortedPlaces.length)),
+              builder: (context, _) =>
+                  Text(itemCountFormatter.format(source.sortedPlaces.length)),
             );
           case TagListPage.routeName:
             trailing = StreamBuilder<TagsChangedEvent>(
               stream: source.eventBus.on<TagsChangedEvent>(),
-              builder: (context, _) => Text(itemCountFormatter.format(source.sortedTags.length)),
+              builder: (context, _) =>
+                  Text(itemCountFormatter.format(source.sortedTags.length)),
             );
         }
 
